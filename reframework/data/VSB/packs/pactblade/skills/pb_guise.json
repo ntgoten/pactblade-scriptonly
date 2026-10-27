@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "uuid": "ffe5c0b8-18fb-5c62-af83-bb18642ee21e",
+  "id": "pb_guise",
+  "kind": "custom",
+  "presentation": {
+    "name": {
+      "en": "Tasha's Otherworldly Guise"
+    },
+    "desc": {
+      "en": "Cloak yourself in a spectral armour from beyond. Bolsters defence, wards off flame and poison, and lets you levitate."
+    },
+    "icon": 38
+  },
+  "availability": {
+    "mode": "all"
+  },
+  "levels": {
+    "1": {
+      "unlock_rank": 9,
+      "dcp_cost": 4000
+    },
+    "2": {
+      "unlock_rank": 9,
+      "dcp_cost": 100
+    }
+  },
+  "trigger": {
+    "type": "slot"
+  },
+  "timeline": [
+    {
+      "id": "n1",
+      "type": "script",
+      "frame": 0,
+      "fn": "return true"
+    }
+  ]
+}

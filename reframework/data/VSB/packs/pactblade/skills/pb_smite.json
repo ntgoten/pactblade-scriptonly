@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "uuid": "4a1d3cc4-c412-5340-a92b-02709ca4fd7e",
+  "id": "pb_smite",
+  "kind": "custom",
+  "presentation": {
+    "name": {
+      "en": "Eldritch Smite"
+    },
+    "desc": {
+      "en": "Channel your patron's power into a crushing overhead blow that hurls even great foes to the ground."
+    },
+    "icon": 35
+  },
+  "availability": {
+    "mode": "all"
+  },
+  "levels": {
+    "1": {
+      "unlock_rank": 8,
+      "dcp_cost": 3000
+    },
+    "2": {
+      "unlock_rank": 8,
+      "dcp_cost": 100
+    }
+  },
+  "trigger": {
+    "type": "slot"
+  },
+  "timeline": [
+    {
+      "id": "n1",
+      "type": "script",
+      "frame": 0,
+      "fn": "return true"
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "uuid": "f6da6f77-72f1-5706-a42d-c00588d2655e",
+  "id": "pb_blast",
+  "kind": "custom",
+  "presentation": {
+    "name": {
+      "en": "Eldritch Blast"
+    },
+    "desc": {
+      "en": "Thrust out your off hand and loose a searing beam of eldritch energy. Can be used mid-air."
+    },
+    "icon": 6
+  },
+  "availability": {
+    "mode": "all"
+  },
+  "levels": {
+    "1": {
+      "unlock_rank": 5,
+      "dcp_cost": 1500
+    },
+    "2": {
+      "unlock_rank": 5,
+      "dcp_cost": 100
+    }
+  },
+  "trigger": {
+    "type": "slot"
+  },
+  "timeline": [
+    {
+      "id": "n1",
+      "type": "script",
+      "frame": 0,
+      "fn": "return true"
+    }
+  ]
+}

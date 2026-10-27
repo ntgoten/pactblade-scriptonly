@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "uuid": "5d203b5c-0187-578c-bbfe-2ee3dc4e2d97",
+  "id": "pb_combo",
+  "kind": "custom",
+  "presentation": {
+    "name": {
+      "en": "Archfey Combo"
+    },
+    "desc": {
+      "en": "A fey-born flurry: vanish and strike from every side in quick succession."
+    },
+    "icon": 9
+  },
+  "availability": {
+    "mode": "all"
+  },
+  "levels": {
+    "1": {
+      "unlock_rank": 7,
+      "dcp_cost": 2500
+    },
+    "2": {
+      "unlock_rank": 7,
+      "dcp_cost": 100
+    }
+  },
+  "trigger": {
+    "type": "slot"
+  },
+  "timeline": [
+    {
+      "id": "n1",
+      "type": "script",
+      "frame": 0,
+      "fn": "return true"
+    }
+  ]
+}

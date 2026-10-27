@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "uuid": "94db826d-21fc-53d1-805a-29bb376004c3",
+  "id": "pb_strike",
+  "kind": "custom",
+  "presentation": {
+    "name": {
+      "en": "Misty Strike"
+    },
+    "desc": {
+      "en": "Step through the mist behind a foe and strike before they can turn."
+    },
+    "icon": 0
+  },
+  "availability": {
+    "mode": "all"
+  },
+  "levels": {
+    "1": {
+      "unlock_rank": 2,
+      "dcp_cost": 500
+    },
+    "2": {
+      "unlock_rank": 2,
+      "dcp_cost": 100
+    }
+  },
+  "trigger": {
+    "type": "slot"
+  },
+  "timeline": [
+    {
+      "id": "n1",
+      "type": "script",
+      "frame": 0,
+      "fn": "return true"
+    }
+  ]
+}

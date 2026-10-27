@@ -1,0 +1,29 @@
+{
+    "author": "ntgoten",
+    "description": {
+        "en": "A pact-bound swordsman: a fast, magick-charged blade and eldritch blasts from the off hand. Runs with Pactblade.lua."
+    },
+    "id": "pactblade",
+    "load_order": 100,
+    "name": {
+        "en": "Pactblade"
+    },
+    "schema_version": 1,
+    "uuid": "00373ca2-d586-4206-a135-9d5188d9ed61",
+    "version": "1.1.2",
+    "vocation": {
+        "description": {
+            "en": "Wields a sword in one hand and eldritch magick in the other. Forgoes the shield."
+        },
+        "name": {
+            "en": "Pactblade"
+        },
+        "progression": {
+            "difficulty": 1,
+            "unlock_rank": 1
+        },
+        "weapon": "Job01",
+        "icon": 46
+    },
+    "vsb_min_version": "0.1.0"
+}
