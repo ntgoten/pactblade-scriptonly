@@ -6,7 +6,7 @@
 --   * Blast damage = the hit's magick base x Magick Bolt's attack multiplier x the passive's magick bonus x 5 / 10.
 --   * Passive on all your other hits: magick part x1.5 (physical part unchanged).
 -- Nothing is written into the save; Reset scripts or removing the file undoes everything.
-local NAME, VERSION = "Pactblade", "1.1.2"
+local NAME, VERSION = "Pactblade", "1.2"
 local DATA = "Pactblade.json"
 -- (1.0) RELEASE (json.RELEASE): the short menu, and of the data files only the ones Pactblade needs are written.
 -- A test build: RELEASE = false below (the full test menu + the debug dumps). (No extra main-chunk locals: 200 max.)
@@ -654,6 +654,10 @@ local FAST, FASTER_OTHER = 1.5, 1.2
 local ONSLAUGHT = { Job01_AttackLeft = true, Job01_AttackRight = true, Job01_AttackAir = true }
 local speeding = false
 local combo = { stage = 0, lastPress = -10 }   -- Archfey Combo, in Cloudfall Strike's slot (see below)
+function combo.is_final(k)   -- (EX) the part playing (or part k) is the falling strike
+    local p = combo.parts and combo.parts[k or combo.stage]
+    return p ~= nil and p.final == true
+end
 local wisps                                     -- the warp wisps (defined further down)
 local function basic_attack(name)
     if not name or not name:find("^Job01_") then return false end
@@ -2269,7 +2273,8 @@ local function combo_dust(args, how)
         if kill then return true end
     end
     if not live.on or combo.stage == 0 or combo.cueing then return false end
-    local rush = combo.stage == 2 or combo.stage == 3
+    local cp = combo.parts and combo.parts[combo.stage]
+    local rush = cp ~= nil and cp.rush == true
     if not ((cfg.comboNoDust and rush) or dbg.comboNoFxAll) then return false end
     local yes = false
     pcall(function()
@@ -3055,7 +3060,23 @@ pcall(function()
                     if go and go:get_address() ~= live.go and go:call("getComponent(System.Type)", sdk.typeof("app.Shell")) then s.pbKind = "slash" end
                 end)
             end
-            if combo.stage == 4 and not combo.finalHit then combo.finalHit = true; note("final strike hit") end
+            if combo.is_final() and not combo.finalHit then combo.finalHit = true; note("final strike hit") end
+            if combo.stage == 1 then   -- (EX camera: from Kite Arrow's 2nd kick) one count per kick (calls < 0.15 s apart = one)
+                local now = os.clock()
+                if now - (combo.kiteLastHit or -1) > 0.15 then combo.kiteHits = (combo.kiteHits or 0) + 1 end
+                combo.kiteLastHit = now
+            end
+            if combo.stage >= 1 or (combo.ex and combo.ex.logAll) then pcall(function()   -- (EX research) every combo hit's data (or all, logAll)
+                local function v(f) local ok, x = pcall(function() return info[f] end); if not ok or x == nil then return "-" end
+                    if type(x) == "userdata" then local ok2, n = pcall(sdk.to_int64, x); if ok2 then return tostring(n & 0xFFFFFFFF) end end
+                    return tostring(x) end
+                local line = ("combo part %d (%s) hit: DamageType %s ActType %s HitEffType %s HitSeType %s react %s blow %s slash %s dmg %s"):format(
+                    combo.stage, tostring(runtime.player():current_action(0)), v("DamageType"), v("DamageActType"), v("HitEffType"),
+                    v("HitSeType"), v("DamageReaction"), v("IsBlowAttack"), v("IsSlashAttack"), v("Damage"))
+                note(line)
+                combo.hitLog = combo.hitLog or {}
+                table.insert(combo.hitLog, line); while #combo.hitLog > 12 do table.remove(combo.hitLog, 1) end
+            end) end
             if combo.stage == 1 and not combo.target then
                 pcall(function()
                     local v = info["<DamageGameObject>k__BackingField"]
@@ -3519,6 +3540,354 @@ pcall(function()
             return sdk.to_ptr(FLINCH)
         end)
 end)
+-- (2026-10-27, Misty Dive research) the dive recorder - see dbg.diveRec; saved to data/Pactblade_dive_trace.json
+;(function()
+    local R = { on = false, list = nil, untilT = 0, n = 0, info = "off (research done - its per-frame joint scan costs FPS)" }
+    dbg.diveRec = R
+    local function v3(v) local ok, s = pcall(function() return ("%.2f %.2f %.2f"):format(v.x, v.y, v.z) end); return ok and s or "?" end
+    local function ev(s) if R.list then R.list[#R.list + 1] = ("%.3f  %s"):format(os.clock() - R.t0, s) end end
+    R.ev = ev
+    local function mine(this)
+        local ok, yes = pcall(function() return this:get_GameObject():get_address() == live.go end)
+        return ok and yes
+    end
+    local function hk(tn, mn, pre, post)
+        pcall(function()
+            local m = sdk.find_type_definition(tn):get_method(mn)
+            sdk.hook(m, function(args) pcall(pre, args) end, function(r) if post then pcall(post) end; return r end)
+        end)
+    end
+    local cur
+    hk("app.Job07SkyDive", "start", function(args)
+        if not R.on then return end
+        local this = sdk.to_managed_object(args[2])
+        cur = this:add_ref()
+        R.list, R.t0, R.untilT, R.n = {}, os.clock(), os.clock() + 5, R.n + 1
+        R.info = ("recording dive %d"):format(R.n)
+        ev("Job07SkyDive.start")
+    end)
+    hk("app.Job07SkyDive", "setDiveStartPosition", function(args) ev("setDiveStartPosition (called)") end, function()
+        if cur then pcall(function()
+            ev(("  -> DiveStartPosition %s | JumpStartPosition %s | DiveSpeed %.2f | DiveStartFrame %.1f"):format(
+                v3(cur:get_field("DiveStartPosition")), v3(cur:get_field("JumpStartPosition")), cur:get_field("DiveSpeed") or -1,
+                cur:get_field("DiveStartFrame") or -1))
+        end) end
+    end)
+    hk("app.Job07SkyDive", "setDiveSpeed", function() end, function()
+        if cur then pcall(function() ev(("setDiveSpeed -> DiveSpeed %.2f, IsSetSpeed %s"):format(cur:get_field("DiveSpeed") or -1, tostring(cur:get_field("IsSetSpeed")))) end) end
+    end)
+    hk("app.Job07SkyDive", "Hit_DamageCheckHitHandler", function(args)
+        pcall(function()
+            local info = sdk.to_managed_object(args[3])
+            local go = info:get_field("<DamageGameObject>k__BackingField")
+            ev("SkyDive HIT check: " .. tostring(go and go:get_Name()) .. " at " .. v3(info:get_field("<Position>k__BackingField")))
+        end)
+    end)
+    hk("app.Job07SkyDive", "setCheckHitCollider", function() ev("setCheckHitCollider") end)
+    hk("app.Job07SkyDive", "end", function() ev("Job07SkyDive.end") end)
+    hk("app.Job07SkyDiveLanding", "start", function() ev("Job07SkyDiveLanding.start") end)
+    re.on_pre_application_entry("LateUpdateBehavior", function()
+        if not R.list then return end
+        local now = os.clock()
+        if now > R.untilT then
+            pcall(json.dump_file, "Pactblade_dive_trace.json", R.list)
+            R.info = ("dive %d saved (%d lines) -> data/Pactblade_dive_trace.json"):format(R.n, #R.list)
+            R.list, cur = nil, nil
+            return
+        end
+        pcall(function()
+            local md = dbg.misty   -- (md is a local defined further down; Pactblade publishes it as dbg.misty)
+            local a = runtime.player()
+            local tr = a.character:get_GameObject():get_Transform()
+            local ground = "?"
+            pcall(function() ground = tostring(a.character:call("get_IsGround")) end)
+            local line = ("me %s ground %s act %s | md %s"):format(v3(tr:get_Position()), ground, tostring(a:current_action(0)), tostring(md and md.stage))
+            pcall(function()
+                local F = md and md.follow
+                if F then line = line .. (" | follow lastY %.2f low %.2f"):format(F.lastY or -1, F.low or -1) end
+            end)
+            pcall(function()
+                local t = (md and md.follow and md.follow.t) or (md and md.target)
+                if not t then return end
+                local okV, valid = pcall(t.get_Valid, t)   -- (CRASH 22:37: get_GameObject on a destroyed target, every frame)
+                if not okV or not valid then return end
+                local ttr = t:get_GameObject():get_Transform()
+                local hi, hn = -1e9, "?"
+                pcall(function()
+                    local j = ttr:call("get_Joints")
+                    for i = 0, j:get_size() - 1 do
+                        local jt = j[i]; local y = jt:get_Position().y
+                        if y > hi then hi, hn = y, tostring(jt:get_Name()) end
+                    end
+                end)
+                line = line .. (" | target %s top %.2f (%s)"):format(v3(ttr:get_Position()), hi, hn)
+            end)
+            if cur then pcall(function()
+                line = line .. (" | SD routine %s diving %s"):format(tostring(cur:get_field("Routine")), tostring(cur:get_field("IsDiveStart")))
+            end) end
+            pcall(function()
+                local v = a.character:call("get_AimTargetPosition")
+                local hv = v and v:get_field("_HasValue")
+                local val = hv and v:get_field("_Value")
+                line = line .. " | aim " .. (hv and ("%.1f %.1f %.1f"):format(val.x, val.y, val.z) or "none")
+            end)
+            ev(line)
+        end)
+    end)
+end)()
+-- (2026-10-27, test aid - user: the pawns walk into the way) pawns stand still: their app.AIDecisionMaker off (the test
+-- dummies' way), re-checked every 1 s; back on when unticked / on script reset
+;(function()
+    local pz = { on = false, n = 0, off = {} }
+    dbg.pawnFreeze = pz
+    local function pawns()
+        local out = {}
+        pcall(function()
+            local l = sdk.get_managed_singleton("app.PawnManager"):get_PawnCharacterList()
+            for i = 0, l:get_Count() - 1 do
+                local ch = l:get_Item(i)
+                if ch then out[#out + 1] = ch end
+            end
+        end)
+        return out
+    end
+    function pz.apply(on)
+        local n = 0
+        for _, ch in ipairs(pawns()) do pcall(function()
+            local dm = ch:get_GameObject():call("getComponent(System.Type)", sdk.typeof("app.AIDecisionMaker"))
+            if not dm then return end
+            if on then
+                if dm:call("get_Enabled") then
+                    dm:call("set_Enabled", false)
+                    pz.off[dm:get_address()] = dm:add_ref()
+                    pcall(function() ch:get_ActionManager():call("requestActionCore(app.ActionManager.Priority, System.String, System.UInt32)", 0, "NormalLocomotion", 0) end)
+                end
+                n = n + 1
+            end
+        end) end
+        if not on then
+            for k, dm in pairs(pz.off) do pcall(function() dm:call("set_Enabled", true) end); pz.off[k] = nil end
+        end
+        pz.n = n
+    end
+    re.on_frame(function()
+        if not pz.on then return end
+        local now = os.clock()
+        if now < (pz.next or 0) then return end
+        pz.next = now + 1.0
+        pz.apply(true)
+    end)
+    re.on_script_reset(function() pcall(pz.apply, false) end)
+end)()
+-- (EX, user: the kick / slide need the real hit sounds) the game's hit sounds go through
+-- app.HitSETriggerSystem.requestTrigger(WwiseContainerApp, trigger id, position): logged here (container's owner, my
+-- action), the user picks one per move in the EX menu, combo.play_se plays it the same way at our contact point
+pcall(function()
+    if json.RELEASE then return end   -- (1.2: EX only - off in a release, it ran on every hit sound in the game)
+    sdk.hook(sdk.find_type_definition("app.HitSETriggerSystem"):get_method("requestTrigger(app.WwiseContainerApp, System.UInt32, via.vec3)"),
+        function(args)
+            local ex = combo.ex
+            if not ex then return end
+            pcall(function()
+                ex.seSys = ex.seSys or sdk.to_managed_object(args[2]):add_ref()
+                pcall(function()   -- (EX: was a hit sound requested for our target?) count per container object
+                    local cgo = sdk.to_managed_object(args[3]):get_GameObject()
+                    ex.seReqAddr, ex.seReqN = cgo:get_address(), (ex.seReqN or 0) + 1
+                end)
+                if ex.playingSe then return end
+                local pl = runtime.player()
+                if not pl then return end
+                local cont = sdk.to_managed_object(args[3])
+                local go = cont and cont:get_GameObject()
+                local id = sdk.to_int64(args[4]) & 0xFFFFFFFF
+                local owner, name = "enemy", go and tostring(go:get_Name()) or "?"
+                if go and go:get_address() == pl.game_object:get_address() then owner = "me"
+                elseif name:find("^wp") then owner = "weapon" end
+                local p = pl.game_object:get_Transform():get_Position()
+                local q = go and go:get_Transform():get_Position()
+                if q and ((q.x - p.x) ^ 2 + (q.z - p.z) ^ 2) > 400 then return end   -- (within 20 m)
+                local e = { id = id, owner = owner, obj = name, action = tostring(pl:current_action(0)), t = os.date("%H:%M:%S") }
+                table.insert(ex.seLog, 1, e)
+                while #ex.seLog > 12 do table.remove(ex.seLog) end
+            end)
+        end, function(r) return r end)
+end)
+-- (EX: the preview is silent) trace of the damage-sound component's steps (tick in the EX menu)
+pcall(function()
+    if json.RELEASE then return end   -- (1.2: EX research only - off in a release)
+    local function add(line)
+        local ex = combo.ex
+        if not ex or not ex.seTraceOn then return end
+        ex.seTrace = ex.seTrace or {}
+        table.insert(ex.seTrace, ("%.3f  %s"):format(os.clock() % 1000, line))
+        while #ex.seTrace > 40 do table.remove(ex.seTrace, 1) end
+    end
+    local td = sdk.find_type_definition("app.WwiseDamageController")
+    for _, m in ipairs(td:get_methods()) do
+        local nm = m:get_name()
+        if nm == "onDamageHit" or nm == "updateInfo" or nm == "updateTrigger" or nm == "trigger" or nm == "getHitTriggerHash"
+            or nm == "getDamageTriggerHash" or nm == "checkAttackManualPlayer" or nm == "updateEfficacyLevel" then
+            pcall(sdk.hook, m, function(args)
+                pcall(function()
+                    local who = tostring(sdk.to_managed_object(args[2]):call("get_GameObject"):get_Name())
+                    local extra = ""
+                    if nm == "trigger" then extra = " id " .. tostring(sdk.to_int64(args[4]) & 0xFFFFFFFF) end
+                    if nm == "onDamageHit" or nm == "updateInfo" then pcall(function()
+                        local info = sdk.to_managed_object(args[3])
+                        local function f(n) local ok, v = pcall(function() return info[n] end); if not ok then return "?" end
+                            if type(v) == "userdata" then local ok2, x = pcall(sdk.to_int64, v); if ok2 then return tostring(x) end end
+                            return tostring(v) end
+                        extra = (" dmg %s SeType %s direct %s SoundMat %s MainSurf %s SubSurf %s Region %s/%s HitEffFlag %s Flag %s"):format(
+                            f("Damage"), f("HitSeType"), f("IsDirectDamage"), f("SoundMaterial"), f("MainSurfaceMaterial"), f("SubSurfaceMaterial"),
+                            f("RegionNo"), f("RegionStatusNo"), f("HitEffectFlag"), f("Flag"))
+                        if nm == "onDamageHit" and not combo.ex.soundCall and f("IsDirectDamage") ~= "true" then   -- a real hit: its material
+                            local addr = sdk.to_managed_object(args[2]):call("get_GameObject"):get_address()
+                            combo.ex.realSnd = combo.ex.realSnd or {}
+                            combo.ex.realSnd[addr] = { SoundMaterial = info.SoundMaterial, MainSurfaceMaterial = info.MainSurfaceMaterial,
+                                SubSurfaceMaterial = info.SubSurfaceMaterial, RegionNo = info.RegionNo, RegionStatusNo = info.RegionStatusNo,
+                                HitEffectFlag = info.HitEffectFlag }
+                        end
+                    end) end
+                    add(("%s.%s%s"):format(who, nm, extra))
+                end)
+            end, function(r)
+                if nm == "getHitTriggerHash" or nm == "getDamageTriggerHash" or nm == "checkAttackManualPlayer" then
+                    pcall(function() add(("   -> %s returned %s"):format(nm, tostring(sdk.to_int64(r) & 0xFFFFFFFF))) end)
+                end
+                return r
+            end)
+        end
+    end
+    sdk.hook(sdk.find_type_definition("app.HitSETriggerSystem"):get_method("requestTrigger(app.WwiseContainerApp, System.UInt32, via.vec3)"),
+        function(args) pcall(function()
+            add(("HitSETriggerSystem.requestTrigger id %d on %s"):format(sdk.to_int64(args[4]) & 0xFFFFFFFF,
+                tostring(sdk.to_managed_object(args[3]):get_GameObject():get_Name())))
+        end) end, function(r) return r end)
+end)
+-- play a picked hit sound at a point: on my / my sword's / the target's own container, as the game does
+function combo.play_se(a, se, target, pos)   -- (on combo: combo.ex does not exist yet here)
+    local ex = combo.ex
+    if not se or not ex.seSys then return false, "no sound picked / hit-sound system not seen yet" end
+    local go
+    if se.owner == "me" then go = a.character:get_GameObject()
+    elseif se.owner == "weapon" then pcall(function() go = held_sword_go() end)
+    else go = target and target:get_GameObject() end
+    if not go then return false, "no object for '" .. tostring(se.owner) .. "'" end
+    local cont
+    pcall(function() cont = go:call("getComponent(System.Type)", sdk.typeof("app.WwiseContainerApp")) end)
+    if not cont then return false, "no sound container on " .. tostring(go:get_Name()) end
+    ex.playingSe = true
+    local ok, err = pcall(function()
+        ex.seSys:call("requestTrigger(app.WwiseContainerApp, System.UInt32, via.vec3)", cont, se.id, pos)
+    end)
+    ex.playingSe = false
+    return ok, ok and ("played on " .. tostring(go:get_Name())) or tostring(err)
+end
+-- (EX, user: the camera out a bit during the kick + backflip) Dimension Door's aim-camera way: right after the game's
+-- MainCameraController.lateUpdate, its camera joint is moved back along the camera's own back axis (+ up a little);
+-- eased in / out; the game's next write takes over when we stop
+;(function()
+    local cz = { k = 0 }
+    pcall(function()
+        sdk.hook(sdk.find_type_definition("app.MainCameraController"):get_method("lateUpdate"), function(args)
+            local st = thread.get_hook_storage()
+            st.pbCam = nil
+            pcall(function() local mc = sdk.to_managed_object(args[2]); if mc._Role == 0 then st.pbCam = mc end end)
+        end, function(ret)
+            local mc = thread.get_hook_storage().pbCam
+            local ex = combo.ex
+            if not mc or not ex then return ret end
+            local now = os.clock()
+            local dt = math.min(0.1, now - (cz.last or now))
+            cz.last = now
+            local part = combo.parts and combo.parts[combo.stage]
+            local inEx = combo.parts == ex.PARTS
+            local early = inEx and ((combo.stage == 1 and (combo.kiteHits or 0) >= 2) or combo.stage == 2 or combo.stage == 3)
+            local want = (ex.zoom and ((part and part.zoom) or (early and ex.zoomEarly))) and 1 or 0
+            if want > cz.k then cz.k = math.min(1, cz.k + dt / math.max(0.01, ex.zoomIn))
+            elseif want < cz.k then cz.k = math.max(0, cz.k - dt / math.max(0.01, ex.zoomOut)) end
+            if cz.k <= 0 then return ret end
+            pcall(function()
+                local k = cz.k * cz.k * (3 - 2 * cz.k)
+                local q, pp = mc._Rotation, mc._Position
+                local bx, by, bz = 2 * (q.x * q.z + q.w * q.y), 2 * (q.y * q.z - q.w * q.x), 1 - 2 * (q.x * q.x + q.y * q.y)   -- camera back
+                local d = ex.zoomBack * k
+                mc._CameraJoint:set_Position(Vector3f.new(pp.x + bx * d, pp.y + by * d + ex.zoomUp * k, pp.z + bz * d))
+            end)
+            return ret
+        end)
+    end)
+end)()
+-- (EX, user: teal body glow on me at the kick / slide) the Skydragon impact (a Mystic Spearhand effect) also asks for the
+-- Spearhand's body glow (material mode 1545610377, recorded): refused on the player for 0.4 s after an EX contact hit
+pcall(function()
+    for _, m in ipairs(sdk.find_type_definition("app.MaterialInterpolationRequestManager"):get_methods()) do
+        if m:get_name() == "requestMaterialMode" then
+            pcall(sdk.hook, m, function(args)
+                local ex = combo.ex
+                if not ex or os.clock() > (ex.noGlowUntil or 0) then return end
+                local skip = false
+                pcall(function()
+                    if (sdk.to_int64(args[3]) & 0xFFFFFFFF) ~= 1545610377 then return end
+                    local go = sdk.to_managed_object(args[2]):call("get_GameObject")
+                    skip = go ~= nil and go:get_address() == live.go
+                end)
+                if skip then ex.glowsRefused = (ex.glowsRefused or 0) + 1; return sdk.PreHookResult.SKIP_ORIGINAL end
+            end, function(r) return r end)
+        end
+    end
+end)
+-- (EX research, user: which stagger does T2 cause?) the reaction the game picks for each of my combo hits
+pcall(function()
+    local NAMES = { [0] = "Wind_S", "Wind_M", "Wind_L", "Quake_S", "Quake_L", "Hitback_S", "Hitback_M", "Hitback_L", "Hitback_LL",
+        "Hitback_LLL", "Hitdown_S", "HitdownQuick_S", "Hitdown_L", "HitdownQuick_L", "Slam_S", "Slam_L", "Upper_S", "Upper_L",
+        "Blown_S", "Blown_L", "Dialog_Blown_S", "Dialog_Blown_L", "FlashFlood" }
+    sdk.hook(sdk.find_type_definition("app.HitController"):get_method("getReactionDamageType(app.HitController.DamageInfo)"),
+        function(args)
+            local s3 = thread.get_hook_storage()
+            s3.pbReact = nil
+            if combo.stage == 0 or not live.go then return end
+            pcall(function()
+                local info = sdk.to_managed_object(args[3])
+                local owner = info["<AttackOwnerObject>k__BackingField"]
+                if owner and owner:get_address() == live.go then s3.pbReact = info end
+            end)
+        end, function(r)
+            local s3 = thread.get_hook_storage()
+            local info = s3.pbReact
+            s3.pbReact = nil
+            if not info then return r end
+            local ex = combo.ex
+            if ex and combo.parts == ex.PARTS and combo.is_final() and ex.finStrong then   -- (user: the last hit a stronger hitback)
+                local was = sdk.to_int64(r) & 0xFFFFFFFF
+                local tv = ex.finType < 0 and 0xFFFFFFFF or ex.finType
+                pcall(function() info.DamageType, info.DamageActType, info.OverwriteBlownType = tv, tv, tv end)
+                pcall(function() info.DamageReaction = ex.finReact end)
+                pcall(function() info.IsForceReceived = true end)
+                note(("EX: the final strike's reaction %d -> %d, power -> %.0f"):format(was, ex.finType, ex.finReact))
+                return sdk.to_ptr(tv)
+            end
+            if ex and combo.parts == ex.PARTS and combo.stage == 3 and ex.t2Weaken then   -- (user: T2 weaker in the EX combo)
+                local was = sdk.to_int64(r) & 0xFFFFFFFF
+                local tv = ex.t2Type < 0 and 0xFFFFFFFF or ex.t2Type
+                pcall(function() info.DamageType, info.DamageActType, info.OverwriteBlownType = tv, tv, tv end)
+                pcall(function() info.DamageReaction = ex.t2React end)
+                note(("EX: T2's reaction %d -> %d, power -> %.0f"):format(was, ex.t2Type, ex.t2React))
+                return sdk.to_ptr(tv)
+            end
+            pcall(function()
+                local v = sdk.to_int64(r) & 0xFFFFFFFF
+                local react = 0
+                pcall(function() react = info.DamageReaction end)
+                local line = ("combo part %d (%s) REACTION: %s (%d), stagger power %.0f"):format(combo.stage,
+                    tostring(runtime.player():current_action(0)), NAMES[v] or (v == 0xFFFFFFFF and "None" or "?"), v, react or 0)
+                note(line)
+                combo.hitLog = combo.hitLog or {}
+                table.insert(combo.hitLog, line); while #combo.hitLog > 12 do table.remove(combo.hitLog, 1) end
+            end)
+            return r
+        end)
+end)
 
 ------------------------------------------------------------------------
 -- menu
@@ -3537,6 +3906,512 @@ local COMBO = {
     { action = "Job01_RushAttackFinish", from = 25.0, to = 54.0, warp = "behind" },
     { action = "Job01_EndRisingLunge", from = 0.0, warp = "head" },
 }
+COMBO[2].rush, COMBO[3].rush, COMBO[4].final = true, true, true
+combo.parts = COMBO
+------------------------------------------------------------------------
+-- (EX, 2026-10-27) Archfey Combo EX (user's design): Kite Arrow -> T1 -> T2 (as above) -> T3 kick + backflip (Dante
+-- Balrog Capoeira kick 2 to frame 62, backflip to frame 30; at the side the player started from) -> T4 slide
+-- (Onimusha Issen_418 to frame 40; opposite the start side, shifted to the player's right so its forward-left arc
+-- hits; Issen_420 recovery if the combo stops there) -> T5 the falling strike (above the head, start side).
+-- The new parts play ported animations (dd2-mods/dante-anim pak) from their own banks with the motion FSM paused;
+-- their hits are CONTACT hits: the right shin + foot (kick) / the blade (slide) touching the target's capsule.
+-- On when the held sword has the EX ability Cloudfall Strike (id 1) - or forced in the menu (ex.mode).
+------------------------------------------------------------------------
+combo.ex = { mode = "auto", info = "-", hits = 0, lastHitInfo = "-",
+    banks = { kick = { bank = 9311, path = "animation/ch/ch00/motlist/pb_dante_kick.motlist" },
+              issen = { bank = 9343, path = "animation/ch/ch00/motlist/pb_oni_issen.motlist" },
+              ryote = { bank = 9341, path = "animation/ch/ch00/motlist/pb_oni_ryoteattack.motlist" } },
+    spark = false,   -- (user: the purple hit effect at the kick / slide - off; the sounds stay)
+    -- (user: Kite Arrow's hit sound on the kick, Onslaught's on the slide) picked from the hit-sound log:
+    -- { id, owner = "me" / "weapon" / "enemy" } - played with the game's own HitSETriggerSystem at the contact
+    kickSe = nil, slideSe = nil, seLog = {},
+    -- (2026-10-27) the real way: HitSeType per move + the target's WwiseDamageController.onDamageHit(info)
+    seKick = 3, seSlide = 1, logAll = false, calcEnd = true, loudKick = 1, loudSlide = 2,   -- (loud*: the hit sound N x at once)   -- (calcEnd: notify the HP bar like a real hit)   -- BlowLow (Kite Arrow's, logged) / SlashMiddle (guess for Onslaught)
+    follow = true, typeKick = 7, typeSlide = 5, force = false, impact = true,   -- (force off: suspect for "no damage")   -- (user: kick Hitback_L like T2, slide only a light flinch)
+    whoosh = 2, WHOOSHES = { {}, { 732561637 }, { 3752127318 }, { 732561637, 3752127318 } },   -- (user: the EX warps sound like a pop: the original
+    -- parts have their attack's whoosh right after the warp - RushAttack 732561637, RushAttackFinish 3752127318, recorded)
+    slideCheck = true, slideGuard = true,
+    -- (user: still a sound missing) the originals play sounds DURING the attack (recorded 2026-10-27): per EX motion up to
+    -- 2 of these at a frame (mm.snd = { { i, f }, ... }, i = index here, 1 = none)
+    SND_LIST = { { 0, "none" }, { 732561637, "RushAttack start" }, { 1214110176, "RushAttack +0.15 s" }, { 2129359301, "RushAttack +0.18 s" },
+        { 38156025, "RushAttack +0.2 s" }, { 3752127318, "RushAttackFinish start" }, { 1402479027, "RushAttackFinish +0.27 s" },
+        { 242625458, "RushAttackFinish +0.5 s" }, { 3040398921, "RushAttackFinish +0.56 s" }, { 490337046, "heard during the backflip" },
+        { 1781269347, "warp (Quik Fot)" }, { 2726238371, "Kite Arrow hit 2" } },
+    zoom = true, zoomEarly = true, zoomBack = 1.5,   -- (zoomEarly: from Kite Arrow's 2nd kick, user)
+    zoomUp = 0.3, zoomIn = 0.25, zoomOut = 0.5,   -- (user: camera out a bit for the kick + backflip)
+    slideBack = 1.45, slideLeft = true, reactSlide = 700, t2Weaken = true, t2Type = 5, t2React = 700,
+    finStrong = true, finType = 8, finReact = 6000,   -- (user: the last hit a stronger hitback; game: None 324 / Hitback_LL 3244)
+    -- (above: the user's tuned slide values 2026-10-27; T2 weaker in the EX combo - the kick does the big one)
+    impactEfx = { { 13, 0, 10 }, { 13, 5, 10 } }, impactSnd = { 2333241765, 3346954226 },   -- Skydragon's Fangtooth dive impact (Blink Behind recording)
+    -- (user: the kick sounds like Kite Arrow's hit) recorded 2026-10-27 on the enemy: hit 1 1251200690, hit 2 (stagger) 2726238371
+    kickSnd = 1, KICK_SNDS = { { 2726238371 }, { 1251200690 }, { 1251200690, 2726238371 }, { 2333241765, 3346954226 } },
+    dmg = 4800, dmgSlide = 2600, react = 4500,   -- (kick ~ T2 4788, slide ~ T1 2646 - measured) legR = 0.13, bladeR = 0.06, bladeLen = 0.95, rehit = 0.3, slideRight = 0.5, blend = 5.0,
+    stamina = 350, CHANGE = "changeMotion(System.UInt32, System.UInt32, System.Single, System.Single, via.motion.InterpolationMode, via.motion.InterpolationCurve)" }
+combo.ex.PARTS = { COMBO[1], COMBO[2], COMBO[3],
+    { name = "kick + backflip", spot = "start", zoom = true,
+      motions = { { "kick", 6, to = 43, hit = "rleg", snd = { { 4, 20 }, { 1, 0 } } },
+                  { "kick", 14, to = 25, last = true, snd = { { 5, 2 }, { 1, 0 } } } } },
+    { name = "slide", spot = "startopp", shiftRight = true, zoom = true, skippable = true,   -- (user: camera out here too; no room -> skipped)
+      motions = { { "issen", 66, to = 40, hit = "sword", last = true, snd = { { 8, 28 }, { 1, 0 } } } }, recovery = { "issen", 67 } },
+    { action = "Job01_EndRisingLunge", from = 0.0, warp = "head", spot = "start", final = true },
+}
+dbg.comboEx = combo.ex
+function combo.ex.clone_info(info)   -- every instance field copied into a fresh DamageInfo
+    local c = sdk.create_instance("app.HitController.DamageInfo"):add_ref()
+    local td = sdk.find_type_definition("app.HitController.DamageInfo")
+    while td and td:get_full_name() ~= "System.Object" do
+        for _, f in ipairs(td:get_fields()) do
+            if not f:is_static() then pcall(function() c:set_field(f:get_name(), info:get_field(f:get_name())) end) end
+        end
+        td = td:get_parent_type()
+    end
+    return c
+end
+-- the contact data of a real hit (offsets from the disassembly, JOURNAL.md): attacker / target objects + hit controllers,
+-- the contact point, Flag bit 0 = "Damage" (else no TriggerId), the sound type (HitSeType -> AttackState)
+function combo.ex.fill_contact(c, a, t, pos, seType)
+    return combo.ex.fill_contact2(c, a, t:get_GameObject(), t["<Hit>k__BackingField"], pos, seType)
+end
+function combo.ex.fill_contact2(c, a, tgo, tHit, pos, seType)
+    local me = a.character:get_GameObject()
+    local myHit = a.character["<Hit>k__BackingField"]
+    local function setf(n, v) pcall(function() c:set_field(n, v) end) end
+    setf("<AttackOwnerObject>k__BackingField", me); setf("<AttackGameObject>k__BackingField", me)
+    setf("<DamageGameObject>k__BackingField", tgo)
+    setf("<AttackHitController>k__BackingField", myHit); setf("<AttackOwnerHitController>k__BackingField", myHit)
+    setf("<DamageHitController>k__BackingField", tHit); setf("<DamageOwnerHitController>k__BackingField", tHit)
+    local p = pos or tgo:get_Transform():get_Position()
+    pcall(function()
+        local v = ValueType.new(sdk.find_type_definition("via.vec3"))
+        v.x, v.y, v.z = p.x, p.y + (pos and 0 or 1.0), p.z
+        c:set_field("<Position>k__BackingField", v)
+    end)
+    pcall(function()
+        local z = ValueType.new(sdk.find_type_definition("via.vec3"))
+        c:set_field("<Normal>k__BackingField", z)
+    end)
+    setf("<Distance>k__BackingField", 0.0)
+    pcall(function()
+        local f = c:get_field("Flag")
+        f = (type(f) == "number" and math.tointeger(f)) or sdk.to_int64(f) or 0
+        f = (f | 1) & ~(1 << 17)   -- Damage on, NoHitSE off
+        c:set_field("Flag", f)
+    end)
+    if seType then pcall(function() c.HitSeType = seType end) end
+    pcall(function() c.IsDirectDamage = false end)
+end
+-- (user: all our attacks need the HP bar update; breakables) after a directDamage: the real hit's notification with a copy
+-- (the damage's own info untouched - applied a frame later) - the target's DamageCalcEndHandler (HP gauge; a gimmick's
+-- callbackCalcDamageEnd = its break check)
+combo.notifyOn = true    -- (2026-10-27 user-tested: ON is fine - the RAYCAST (hit_world) made the enemy fall through the ground + the crash)
+function combo.notify_hit(tgo, tHit, info, pos)
+    if not combo.notifyOn then return false end
+    if not (tgo and tHit and info) then return false end
+    local okV, valid = pcall(tgo.get_Valid, tgo)
+    if not okV or not valid then return false end
+    local a = runtime.player()
+    local c = combo.ex.clone_info(info)
+    combo.ex.fill_contact2(c, a, tgo, tHit, pos, nil)
+    local h = tHit:get_field("DamageCalcEndHandler")
+    if not h then return false end
+    h:call("Invoke(app.HitController.DamageInfo)", c)
+    return true
+end
+-- what a real hit does after its damage: the target's DamageCalcEndHandler (HP gauge grey segment, hit sound ...);
+-- then, if no hit sound was requested for the target, our own (switches through its WwiseDamageController + triggers)
+function combo.ex.after_hit(a, t, info, seType, dmg, pos, loud)
+    local ex = combo.ex
+    local tgo = t:get_GameObject()
+    local th = t["<Hit>k__BackingField"]
+    local out = {}
+    local n0 = ex.seReqN or 0
+    if ex.calcEnd then
+        local okH, errH = pcall(function()
+            local h = th:get_field("DamageCalcEndHandler")
+            if not h then error("no handler") end
+            if not ex.listeners then pcall(function()   -- (research, once) who listens: the delegate's targets
+                local names = {}
+                local arr = h:call("GetInvocationList")
+                for i = 0, arr:get_size() - 1 do
+                    pcall(function() names[#names + 1] = arr[i]:call("get_Target"):get_type_definition():get_full_name() end)
+                end
+                ex.listeners = table.concat(names, ", ")
+                note("EX research: DamageCalcEndHandler listeners: " .. ex.listeners)
+            end) end
+            local c = ex.clone_info(info)
+            ex.fill_contact(c, a, t, pos, seType)
+            h:call("Invoke(app.HitController.DamageInfo)", c)
+        end)
+        out[#out + 1] = okH and "HP bar notified" or ("HP bar: " .. tostring(errH))
+    end
+    local gotSound = (ex.seReqN or 0) > n0 and ex.seReqAddr == tgo:get_address()
+    if gotSound then out[#out + 1] = "the game played its hit sound"
+    elseif ex.impact then
+        local okF, errF = pcall(function()   -- the enemy's damage-sound component with the full contact data
+            local wdc = tgo:call("getComponent(System.Type)", sdk.typeof("app.WwiseDamageController"))
+            if not wdc then error("no damage sound component on the enemy") end
+            local c = ex.clone_info(info)
+            ex.fill_contact(c, a, t, pos, seType)
+            ex.soundCall = true
+            local okC, errC = true, nil
+            for _ = 1, math.max(1, math.floor(loud or 1)) do   -- (louder: the same hit sound again in the same instant)
+                okC, errC = pcall(function() wdc:call("onDamageHit(app.HitController.DamageInfo)", c) end)
+                if not okC then break end
+            end
+            ex.soundCall = false
+            if not okC then error(errC) end
+        end)
+        out[#out + 1] = okF and (((ex.seReqN or 0) > n0 and ex.seReqAddr == tgo:get_address()) and "hit sound requested (game's way)"
+            or "sound component called, but NO sound requested") or ("sound: " .. tostring(errF))
+    end
+    ex.seDone = true
+    return table.concat(out, ", ")
+end
+function combo.ex.sound_hit(wdc, tgo, me, seType, dmg, pos)
+    local ex = combo.ex
+    local si = sdk.create_instance("app.HitController.DamageInfo"):add_ref()
+    si.Damage = dmg or 1
+    pcall(function() si.HitSeType = seType end)
+    pcall(function() si.IsDirectDamage = false end)
+    pcall(function() si["<AttackOwnerObject>k__BackingField"] = me end)
+    local rs = ex.realSnd and ex.realSnd[tgo:get_address()]
+    if rs then for k, v in pairs(rs) do pcall(function() si[k] = v end) end end
+    ex.seCopied = rs and "material from a real hit on it" or "no real hit on it yet (default material)"
+    ex.soundCall = true
+    local ok, err = pcall(function() wdc:call("onDamageHit(app.HitController.DamageInfo)", si) end)
+    ex.soundCall = false
+    if not ok then error(err) end
+end
+-- (user: the tester's play buttons did nothing - sounds from the menu's draw step) the tester's sound on the next update
+-- (user 2026-10-27: crash at the kick - the first kick of a session added its motion bank, resizing my bank list while a
+-- game worker read it) the EX banks are added AHEAD: every 2 s while the EX version is on and nothing of ours plays
+re.on_pre_application_entry("UpdateBehavior", function()
+    if not live.on or os.clock() < (combo.ex.nextPre or 0) then return end
+    combo.ex.nextPre = os.clock() + 2
+    if combo.mPart or combo.stage ~= 0 then return end
+    local a = runtime.player()
+    if not a or not a:valid() or not combo.ex.active() then return end
+    for _, k in ipairs({ "kick", "issen" }) do pcall(combo.ex.bank, a, k) end
+end)
+re.on_pre_application_entry("UpdateBehavior", function()   -- (EX: the HP check 0.3 s after a contact hit)
+    local ex = combo.ex
+    local w = ex and ex.hpWatch
+    if not w or os.clock() < w.at then return end
+    ex.hpWatch = nil
+    pcall(function()
+        local hp1 = w.th:get_Hp()
+        ex.lastHitInfo = ("%s: HP %.0f -> %.0f (%s)"):format(w.what, w.hp0, hp1, hp1 < w.hp0 and ("-%.0f"):format(w.hp0 - hp1) or "NO DAMAGE")
+        note("Archfey Combo EX: " .. ex.lastHitInfo)
+    end)
+end)
+re.on_pre_application_entry("UpdateBehavior", function()   -- (hit sound type preview, see the EX menu)
+    local ex = combo.ex
+    local ty = ex and ex.seQueue
+    if not ty then return end
+    ex.seQueue = nil
+    local ok, err = pcall(function()
+        local pl = runtime.player()
+        local me = pl.character:get_GameObject()
+        local p = me:get_Transform():get_Position()
+        local best, bestD
+        local list = sdk.get_managed_singleton("app.EnemyManager")._EnemyList
+        for i = 0, list._size - 1 do
+            pcall(function()
+                local ch = list._items[i]._Chara
+                local q = ch:get_GameObject():get_Transform():get_Position()
+                local d = (q.x - p.x) ^ 2 + (q.z - p.z) ^ 2
+                if d < 400 and (not bestD or d < bestD) then best, bestD = ch, d end
+            end)
+        end
+        if not best then error("no enemy within 20 m") end
+        local wdc = best:get_GameObject():call("getComponent(System.Type)", sdk.typeof("app.WwiseDamageController"))
+        if not wdc then error("that enemy has no damage sound component") end
+        local c = sdk.create_instance("app.HitController.DamageInfo"):add_ref()
+        c.Damage = 1
+        ex.fill_contact(c, pl, best, nil, ty)
+        local n0 = ex.seReqN or 0
+        ex.soundCall = true
+        local okC, errC = true, nil
+        for _ = 1, math.max(1, math.floor(ex.seQueueLoud or 1)) do
+            okC, errC = pcall(function() wdc:call("onDamageHit(app.HitController.DamageInfo)", c) end)
+            if not okC then break end
+        end
+        ex.seQueueLoud = nil
+        ex.soundCall = false
+        if not okC then error(errC) end
+        ex.sePrevInfo = ("type %d on %s (%.0f m): %s"):format(ty, tostring(best:get_GameObject():get_Name()), math.sqrt(bestD),
+            (ex.seReqN or 0) > n0 and "sound requested" or "NO sound requested")
+    end)
+    if not ok then ex.sePrevInfo = "could not play: " .. tostring(err) end
+end)
+re.on_pre_application_entry("UpdateBehavior", function()
+    local ex = combo.ex
+    local e = ex and ex.testQueue
+    if not e then return end
+    ex.testQueue = nil
+    local ok, found = pcall(function() return combo.cue_sound(runtime.player(), e[1]) end)
+    ex.testInfo = ("%s (%d): %s"):format(e[2], e[1], not ok and ("error: " .. tostring(found)) or found and "played"
+        or "NOT in my sound containers right now (it belongs to another object / isn't loaded)")
+end)
+-- (user: settings lost on a script reset) the EX settings saved in data/Pactblade_ex.json (loaded here, saved on change)
+combo.ex.SAVE = { "mode", "zoomEarly", "finStrong", "finType", "finReact", "loudKick", "loudSlide", "calcEnd", "dmgSlide", "seKick", "seSlide", "spark", "whoosh", "slideCheck", "follow", "typeKick", "typeSlide", "force", "impact", "kickSnd", "zoom", "zoomBack", "zoomUp", "zoomIn",
+    "zoomOut", "slideBack", "reactSlide", "t2Weaken", "t2Type", "t2React", "dmg", "react", "legR", "bladeR", "bladeLen", "rehit",
+    "slideRight", "slideLeft", "slideFromStart", "stamina", "needLv2", "slideGuard" }
+pcall(function()
+    local saved = json.load_file("Pactblade_ex.json")
+    if type(saved) ~= "table" then return end
+    if not saved.v2 then saved.force = nil end
+    if not saved.v3 then saved.dmg = nil end   -- (2026-10-27: 1200 -> the new kick / slide defaults once)   -- (2026-10-27: "through the armour" back to off once - no-damage suspect)
+    for _, k in ipairs(combo.ex.SAVE) do
+        if saved[k] ~= nil and type(saved[k]) == type(combo.ex[k] == nil and saved[k] or combo.ex[k]) then combo.ex[k] = saved[k] end
+    end
+    for _, pt in ipairs(combo.ex.PARTS) do   -- the cut frames
+        for _, mm in ipairs(pt.motions or {}) do
+            local v = saved.cuts and saved.cuts[mm[1] .. "_" .. mm[2]]
+            if type(v) == "number" then mm.to = v end
+            local ev = saved.snds and saved.snds[mm[1] .. "_" .. mm[2]]
+            if type(ev) == "table" and mm.snd then
+                for i = 1, #mm.snd do if type(ev[i]) == "table" and type(ev[i][1]) == "number" then mm.snd[i] = { ev[i][1], ev[i][2] or 0 } end end
+            end
+        end
+    end
+end)
+function combo.ex.save()
+    local out = { cuts = {}, snds = {}, v2 = true, v3 = true }
+    for _, k in ipairs(combo.ex.SAVE) do out[k] = combo.ex[k] end
+    for _, pt in ipairs(combo.ex.PARTS) do
+        for _, mm in ipairs(pt.motions or {}) do
+            out.cuts[mm[1] .. "_" .. mm[2]] = mm.to
+            if mm.snd then out.snds[mm[1] .. "_" .. mm[2]] = mm.snd end
+        end
+    end
+    pcall(json.dump_file, "Pactblade_ex.json", out)
+end
+function combo.ex.weapon_has()   -- the held sword's 4 special-skill slots contain Cloudfall Strike (EX ability 1)
+    local has = false
+    pcall(function()
+        local ab = dbg.main_weapon_sd()._Ability
+        for i = 1, 4 do
+            local v = ab["Slot" .. i]
+            if type(v) ~= "number" then v = sdk.to_int64(v) end
+            if v and (v & 0xFF) == 1 then has = true end
+        end
+    end)
+    return has
+end
+-- (1.2) the game's own EX rule (tutorial ui_0801_215): the special skill on the sword AND the skill learned at level 2
+function combo.ex.vsb_id()
+    for vid, e in pairs((dbg.adapter and dbg.adapter.map) or {}) do if e.kind == "combo" then return vid end end
+end
+function combo.ex.level()   -- Archfey Combo's learned level (0 = not learned / unknown)
+    local lv = 0
+    pcall(function()
+        local id = combo.ex.vsb_id()
+        if not id then return end
+        local list = runtime.player().human["<SkillContext>k__BackingField"].EnabledCustomSkills
+        local n = 0
+        pcall(function() n = list:call("get_Count") end)
+        if not n or n == 0 then pcall(function() n = list:get_size() end) end
+        for i = 0, (n or 0) - 1 do
+            local e = list[i]
+            if e and e.CustomSkillID == id then lv = tonumber(e.Level) or 0 end
+        end
+    end)
+    return lv
+end
+if combo.ex.needLv2 == nil then combo.ex.needLv2 = true end   -- (a saved choice is loaded above)
+function combo.ex.active()
+    if json.RELEASE then return false end   -- (1.2 user: in the release the EX version is hidden and off)
+    local m = combo.ex.mode
+    if m == "on" then return true elseif m == "off" then return false end
+    local now = os.clock()
+    if combo.ex.actT and now - combo.ex.actT < 0.5 then return combo.ex.act end   -- (checked twice a second)
+    combo.ex.actT = now
+    combo.ex.act = combo.ex.weapon_has() and (not combo.ex.needLv2 or combo.ex.level() >= 2)
+    return combo.ex.act
+end
+-- (1.2) the "EX" name: VSB writes every menu / HUD skill name from its registry's text table (VSB/game/text.lua); while
+-- the EX version is on, Archfey Combo's level-2 name there reads "Archfey Combo EX" (put back when off). Every 1 s:
+-- VSB rebuilds the table whenever its skill plan changes.
+function combo.ex.name_update()
+    local ok, sd = pcall(require, "VSB.game.skilldefs")
+    local reg = ok and type(sd) == "table" and sd.registry
+    local id = combo.ex.vsb_id()
+    if not reg or not reg.text or not id then return end
+    local lv = reg.customSkills and reg.customSkills[id]
+    local g = lv and ((lv[2] and lv[2].nameGuid) or (lv[1] and lv[1].nameGuid))
+    local t = g and reg.text[g]
+    if type(t) ~= "table" or type(t.uiName) ~= "string" then return end
+    t.pbBase = t.pbBase or t.uiName
+    local want = (live.on and combo.ex.active()) and (t.pbBase .. " EX") or t.pbBase
+    if t.uiName == want then return end
+    t.uiName = want
+    combo.ex.nameNow = want
+    pcall(function() require("VSB.game.skillstate").refresh_hud() end)   -- (the HUD palette rewrites its labels)
+end
+re.on_pre_application_entry("UpdateBehavior", function()
+    if os.clock() < (combo.ex.nextName or 0) then return end
+    combo.ex.nextName = os.clock() + 1
+    pcall(combo.ex.name_update)
+end)
+function combo.ex.bank(a, key)   -- castT.bank's way: the motlist as our own dynamic bank (once per character)
+    local b = combo.ex.banks[key]
+    local mo = a.character:get_Motion()
+    for i = 0, mo:getDynamicMotionBankCount() - 1 do
+        local x = mo:getDynamicMotionBank(i)
+        if x and x:get_BankID() == b.bank then return true end
+    end
+    local holder = sdk.create_resource("via.motion.MotionListResource", b.path):add_ref()
+        :create_holder("via.motion.MotionListResourceHolder"):add_ref()
+    local n = mo:getDynamicMotionBankCount()
+    mo:setDynamicMotionBankCount(n + 1)
+    local bank = sdk.create_instance("via.motion.DynamicMotionBank"):add_ref()
+    bank:set_MotionList(holder)
+    bank:set_OverwriteBankID(true)
+    bank:set_BankID(b.bank)
+    mo:setDynamicMotionBank(n, bank)
+    return false
+end
+function combo.ex.ready(a, m)
+    combo.ex.bank(a, m[1])
+    local info = sdk.create_instance("via.motion.MotionInfo", true)
+    return a.character:get_Motion():call("getMotionInfo(System.UInt32, System.UInt32, via.motion.MotionInfo)",
+        combo.ex.banks[m[1]].bank, m[2], info) == true
+end
+function combo.ex.fsm(a, on)
+    pcall(function()
+        if on then
+            if combo.ex.paused then return end
+            local f = a.character:get_GameObject():call("getComponent(System.Type)", sdk.typeof("via.motion.MotionFsm2"))
+            if f then f:call("set_Paused", true); combo.ex.paused = f:add_ref() end
+        elseif combo.ex.paused then combo.ex.paused:call("set_Paused", false); combo.ex.paused = nil end
+    end)
+end
+function combo.ex.start(a, m)
+    local L = a.character:get_Motion():getLayer(0)
+    L:call(combo.ex.CHANGE, combo.ex.banks[m[1]].bank, m[2], 0.0, combo.ex.blend, 1, 1)
+    L:call("set_Speed", 1.0)
+    combo.ex.playing, combo.ex.n, combo.ex.touch, combo.ex.prevFr = true, 0, false, -1
+    combo.ex.gLast, combo.ex.gStill, combo.ex.cutNow = nil, 0, false
+end
+-- contact hits: the limb (segments) vs the target's capsule (its feet .. head, the game's collision radius)
+function combo.ex.contact(a, m)
+    local ex, t = combo.ex, combo.target
+    if not t then return end
+    local tr = a.character:get_GameObject():get_Transform()
+    local function J(n) local j = tr:call("getJointByName", n); return j and j:get_Position() end
+    local segs = {}
+    if m.hit == "rleg" then   -- (user's picture: the right shin + foot)
+        local k, an, to = J("R_Leg_Lower"), J("R_Leg_Ankle"), J("R_Leg_Toes")
+        if not (k and an and to) then return end
+        local mid = Vector3f.new((k.x + an.x) / 2, (k.y + an.y) / 2, (k.z + an.z) / 2)
+        segs = { { mid, an, ex.legR }, { an, to, ex.legR } }
+    else                      -- the blade: R_PropA + its +Y
+        local j = tr:call("getJointByName", "R_PropA")
+        if not j then return end
+        local p, q = j:get_Position(), j:get_Rotation()
+        local bx, by, bz = 2 * (q.x * q.y - q.w * q.z), 1 - 2 * (q.x * q.x + q.z * q.z), 2 * (q.y * q.z + q.w * q.x)
+        segs = { { p, Vector3f.new(p.x + bx * ex.bladeLen, p.y + by * ex.bladeLen, p.z + bz * ex.bladeLen), ex.bladeR } }
+    end
+    local ttr = t:get_GameObject():get_Transform()
+    local base = ttr:get_Position()
+    local top = base.y + 1.7
+    pcall(function()
+        for _, jn in ipairs({ "Head", "head", "Neck", "neck" }) do
+            local j = ttr:getJointByName(jn)
+            if j then top = math.max(base.y + 0.5, j:get_Position().y); return end
+        end
+    end)
+    local rad = 0.5
+    pcall(function()
+        local r = t["<CharaController>k__BackingField"]:call("get_Radius")
+        if type(r) == "number" and r > 0 and r < 10 then rad = r end
+    end)
+    local best = 1e9
+    for _, sg in ipairs(segs) do
+        local A, B, lr = sg[1], sg[2], sg[3]
+        for i = 0, 6 do
+            local f = i / 6
+            local x, y, z = A.x + (B.x - A.x) * f, A.y + (B.y - A.y) * f, A.z + (B.z - A.z) * f
+            local h = math.sqrt((x - base.x) ^ 2 + (z - base.z) ^ 2)
+            local cy = math.max(base.y, math.min(top, y))
+            local d = math.sqrt(h * h + (y - cy) ^ 2) - lr
+            if d < best then best = d; ex.hitPos = Vector3f.new(x, y, z) end
+        end
+    end
+    local touch = best <= rad
+    local now = os.clock()
+    local hp = 1
+    pcall(function() hp = t["<Hit>k__BackingField"]:get_Hp() end)
+    if touch and not ex.touch and now - (ex.lastHit or 0) >= ex.rehit and hp > 0 then
+        ex.lastHit = now
+        local ok, err = pcall(function()
+            local hm = sdk.get_managed_singleton("app.HitManager")
+            local info = sdk.create_instance("app.HitController.DamageInfo"):add_ref()
+            info.Damage = (m.hit == "rleg") and ex.dmg or (ex.dmgSlide or ex.dmg)
+            local ty = (m.hit == "rleg") and ex.typeKick or ex.typeSlide   -- (user's pick; AttackUserData.DamageTypeEnum)
+            local tv = ty < 0 and 0xFFFFFFFF or ty
+            info.DamageType, info.DamageActType, info.IsDirectDamageEnableAllDamageType = tv, tv, true
+            if ex.force then pcall(function() info.OverwriteBlownType = tv end) end
+            pcall(function() info.DamageReaction = (m.hit == "rleg") and ex.react or ex.reactSlide end)
+            if ex.force then   -- (Hellish Rebuke's way: through the enemy's attack armour)
+                pcall(function() info.IsForceReceived = true end)
+                pcall(function() info.IgnoreBalanceReactionCalc = true end)
+            end
+            -- (user: no spark, no sound) the hit's look + sound types: kick = blow, slide = cut; + the direction
+            local kick = m.hit == "rleg"
+            pcall(function() info.HitEffType = kick and 8 or 2 end)       -- BlowHigh / SlashHigh
+            pcall(function() info.HitSeType = kick and ex.seKick or ex.seSlide end)   -- (user's pick, AttackUserData.HitSeTypeEnum)
+            pcall(function() if kick then info.IsBlowAttack = true else info.IsSlashAttack = true end end)
+            pcall(function()
+                local pp, tq = a.character:get_GameObject():get_Transform():get_Position(), base
+                local vx, vz = tq.x - pp.x, tq.z - pp.z
+                local l = math.sqrt(vx * vx + vz * vz)
+                if l > 0.001 then info.AttackVec = Vector3f.new(vx / l, 0, vz / l) end
+            end)
+            local th = t["<Hit>k__BackingField"]
+            local hp0 = th:get_Hp()
+            ex.hpWatch = { th = th, hp0 = hp0, at = os.clock() + 0.3, what = kick and "kick" or "slide" }
+            local ok2 = pcall(hm.call, hm, "directDamage", info, th, a.character:get_GameObject(), false, a.character["<Hit>k__BackingField"])
+            if not ok2 then hm:call("directDamage", info, th, nil, false, nil) end
+            -- (user: no / wrong hit sound) what a real hit does for its sound: the target's WwiseDamageController
+            ex.seDone = false
+            local okA, how = pcall(ex.after_hit, a, t, info, kick and ex.seKick or ex.seSlide, info.Damage, ex.hitPos, kick and ex.loudKick or ex.loudSlide)
+            ex.seInfo = ("%s: %s"):format(kick and "kick" or "slide", okA and tostring(how) or ("FAILED: " .. tostring(how)))
+            note("Archfey Combo EX: " .. ex.seInfo)
+            ex.hpInfo = ("HP %.0f before"):format(hp0)   -- (the damage lands a frame later)
+        end)
+        ex.noGlowUntil = os.clock() + 0.4   -- (user: a teal body glow at the kick / slide) the impact's body glow is refused
+        if ex.impact and combo.cues and ex.hitPos then   -- (directDamage plays no spark / sound: ours at the contact point)
+            local rot = a.character:get_GameObject():get_Transform():get_Rotation()
+            local se = nil   -- (the picked-id way retired: every hit triggers the same ids)
+            if ex.seDone then   -- the game's own hit sound played: only the (optional) spark
+                if ex.spark then pcall(combo.cues, a, ex.impactEfx, {}, ex.hitPos, rot) end
+            elseif se then
+                local okP, how = combo.play_se(a, se, t, ex.hitPos)
+                ex.seInfo = ("%s: hit sound %d (%s) - %s"):format(m.hit == "rleg" and "kick" or "slide", se.id, se.owner, tostring(how))
+                if ex.spark then pcall(combo.cues, a, ex.impactEfx, {}, ex.hitPos, rot) end
+            elseif m.hit == "rleg" and ex.kickSnd ~= 4 then   -- Kite Arrow's hit sound: on the enemy, like the game does
+                if ex.spark then pcall(combo.cues, a, ex.impactEfx, {}, ex.hitPos, rot) end
+                local tgo = t:get_GameObject()
+                local played = 0
+                for _, id in ipairs(ex.KICK_SNDS[ex.kickSnd] or {}) do
+                    local okS, yes = pcall(combo.sound_on, tgo, id)
+                    if okS and yes then played = played + 1; ex.kickHow = tostring(yes) elseif combo.cue_sound then pcall(combo.cue_sound, a, id) end
+                end
+                ex.kickSndInfo = ("kick sound: %d of %d played on the enemy (%s)"):format(played, #(ex.KICK_SNDS[ex.kickSnd] or {}), tostring(ex.kickHow))
+            else
+                pcall(combo.cues, a, ex.spark and ex.impactEfx or {}, ex.impactSnd, ex.hitPos, rot)
+            end
+        end
+        ex.hits = ex.hits + 1
+        ex.lastHitInfo = ("%s hit at frame %.0f (%s, %s)"):format(m.hit == "rleg" and "kick" or "slide",
+            a.character:get_Motion():getLayer(0):call("get_Frame") or -1, ok and "ok" or tostring(err), tostring(ex.hpInfo))
+        note("Archfey Combo EX: " .. ex.lastHitInfo)
+    end
+    ex.touch = touch
+    ex.gap = best - rad
+end
 local COMBO_STAMINA = 250
 local WARP_GAP = 1.2         -- metres between the target's body and us
 local HEAD_ABOVE = 0.4       -- metres above the target's head for the falling strike
@@ -3551,6 +4426,7 @@ local CUES = {
 }
 local CUE_SECS = 1.0
 local ourReq = false
+ourReqMD = false   -- (global on purpose: Misty Dive's landing ends with its own request, read by the combo's request hook)
 local cueLive = {}
 
 local function flat_dir(x, z)
@@ -3636,6 +4512,34 @@ local function cue_sound(a, triggerId)
     return false
 end
 combo.cue_sound = cue_sound   -- (the cast test, outside this function, plays sounds with it)
+-- (EX, user: the kick has no hit sound) Kite Arrow's hit sounds are triggered on the HIT ENEMY (Recorder: obj ch230004_05):
+-- the same trigger on another object's own sound containers
+function combo.sound_on(go, triggerId)
+    for _, sc in ipairs(components_of(go, "soundlib.SoundContainer")) do
+        local ok, done = pcall(function()
+            for _, info in pairs(sc._TriggerInfoList._items) do
+                if info and info._TriggerId == triggerId then
+                    local req = sc:call("createRequestInfo(soundlib.SoundTriggerInfo, via.GameObject, via.GameObject, System.UInt32, System.Boolean, System.Boolean, System.UInt32, via.simplewwise.CallbackType, System.Action`1<soundlib.SoundManager.RequestInfo>, System.Action`1<soundlib.SoundManager.RequestInfo>, System.Action`1<soundlib.SoundManager.RequestInfo>, System.Action`1<soundlib.SoundManager.RequestInfo>)",
+                        info, go, go, info._OffsetJointHash, false, false, 0, 0, nil, nil, nil, nil)
+                    if req then
+                        req = req:add_ref()
+                        req["<Container>k__BackingField"] = sc
+                        sc:call("trigger(soundlib.SoundManager.RequestInfo)", req)
+                        return true
+                    end
+                end
+            end
+            return false
+        end)
+        if ok and done then return true end
+    end
+    -- (user: still silent) not in a prepared list: the direct trigger by id on the object's own container
+    for _, sc in ipairs(components_of(go, "soundlib.SoundContainer")) do
+        if pcall(function() sc:call("triggerLogLess(System.UInt32, via.GameObject, via.GameObject)", triggerId, go, go) end) then return "direct" end
+        if pcall(function() sc:call("trigger(System.UInt32)", triggerId) end) then return "direct (id only)" end
+    end
+    return false
+end
 -- a looping sound started with cue_sound stops only when told: SoundContainer.stopTriggered(id, object, fade ms)
 function combo.stop_sound(a, triggerId, fadeMs)
     local go = a.character:get_GameObject()
@@ -3650,6 +4554,7 @@ local function cues(a, efx, snd, pos, rot)
     for _, id in ipairs(snd) do cue_sound(a, id) end
     combo.cueingSnd = false
 end
+combo.cues = cues   -- (EX: the contact hits' spark + sound)
 re.on_frame(function()
     if #cueLive == 0 then return end
     local now = os.clock()
@@ -3667,6 +4572,75 @@ end)
 -- terrain checks with _SharedCore's raycast (Blink Behind), when installed
 local castOk, shared = pcall(require, "_SharedCore/Functions")
 local cast_ray = castOk and type(shared) == "table" and shared.cast_ray or nil
+-- (user: Eldritch Blast doesn't break ice / rocks) every breakable world object a path TOUCHES takes the hit: a sphere
+-- cast along it on the layers named like gimmick / terrain / static (found once, noted), each hit object (or a parent) with
+-- an app.GimmickBase that has its own HitController and isn't broken -> directDamage + the real-hit notification
+combo.worldLayers = nil
+combo.worldOn = false   -- (2026-10-27 OFF with notify_hit - the layer names matched nothing anyway; parked)
+function combo.hit_world(from, to, dmg, what)
+    if not combo.worldOn then return 0 end
+    if not cast_ray or not from or not to then return 0 end
+    if not combo.worldLayers then
+        combo.worldLayers = {}
+        local names = {}
+        pcall(function()
+            local ps = sdk.get_native_singleton("via.physics.System")
+            local m = sdk.find_type_definition("via.physics.System"):get_method("getLayerName(System.UInt32)")
+            for i = 0, 63 do
+                local nm = tostring(m:call(ps, i) or "")
+                if nm:lower():find("gimmick") or nm:lower():find("terrain") or nm:lower():find("static") or nm:lower():find("break")
+                    or nm:lower():find("destruct") or nm:lower():find("object") then
+                    combo.worldLayers[#combo.worldLayers + 1] = i; names[#names + 1] = i .. "=" .. nm
+                end
+            end
+        end)
+        if #combo.worldLayers == 0 then combo.worldLayers = { 2 } end
+        note("world hits: layers " .. table.concat(names, ", "))
+    end
+    local seen, n, hitNames = {}, 0, {}
+    local a = runtime.player()
+    for _, layer in ipairs(combo.worldLayers) do
+        pcall(function()
+            for _, r in ipairs(cast_ray(from, to, layer, 0, 0.35, 1) or {}) do
+                local go, p = r[1], r[2]
+                local depth = 0
+                while go and depth < 4 do
+                    local gb
+                    pcall(function() gb = components_of(go, "app.GimmickBase")[1] end)
+                    if gb then
+                        local key = gb:get_address()
+                        if not seen[key] then
+                            seen[key] = true
+                            local broken, noDmg, hc = false, false, nil
+                            pcall(function() broken = gb:get_field("_IsBroken") == true end)
+                            pcall(function() noDmg = gb:get_field("IsNoDamage") == true end)
+                            pcall(function() hc = gb:get_field("<CompHitCtrl>k__BackingField") end)
+                            if hc and not broken and not noDmg and n < 6 then
+                                n = n + 1
+                                local info = sdk.create_instance("app.HitController.DamageInfo"):add_ref()
+                                info.Damage = dmg or 500
+                                pcall(function() info.IsMagicAttack = true end)
+                                pcall(function() info.MagicDamage = dmg or 500 end)
+                                local hm = sdk.get_managed_singleton("app.HitManager")
+                                local okD = pcall(hm.call, hm, "directDamage", info, hc, a.character:get_GameObject(), false, a.character["<Hit>k__BackingField"])
+                                if not okD then pcall(hm.call, hm, "directDamage", info, hc, nil, false, nil) end
+                                local pos = p and Vector3f.new(p.x, p.y, p.z) or nil
+                                pcall(combo.notify_hit, gb:get_GameObject(), hc, info, pos)
+                                hitNames[#hitNames + 1] = tostring(gb:get_GameObject():get_Name())
+                            end
+                        end
+                        break
+                    end
+                    local par
+                    pcall(function() par = go:get_Transform():call("get_Parent"); par = par and par:get_GameObject() end)
+                    go, depth = par, depth + 1
+                end
+            end
+        end)
+    end
+    if n > 0 then note(("%s hit %d world object(s): %s"):format(what or "?", n, table.concat(hitNames, ", "))) end
+    return n
+end
 local function nearest_hit(from, to, radius)
     if not cast_ray then return nil end
     local ok, best, bestD = pcall(function()
@@ -3778,16 +4752,26 @@ local function sword_shown(on)
     end)
 end
 local function combo_end(why)
+    if combo.mPart then   -- (EX) a ported animation was playing: the game's motion state machine back + idle
+        combo.mPart = nil
+        pcall(function()
+            local a = runtime.player()
+            combo.ex.fsm(a, false)
+            ourReq = true
+            pcall(a.request_action, a, a:is_grounded() == false and "WaitToFall" or "NormalLocomotion", 0)
+            ourReq = false
+        end)
+    end
     if combo.stage ~= 0 then
         combo.endT = os.clock()
-        if combo.stage == 4 then
+        if combo.is_final() then
             combo.result = { text = combo.finalHit and "Archfey Combo: final strike HIT" or "Archfey Combo: final strike MISSED",
                              ok = combo.finalHit == true, t = os.clock() }
         else
             combo.result = { text = ("Archfey Combo stopped in part %d: %s"):format(combo.stage, tostring(why)), ok = false, t = os.clock() }
         end
     end
-    if combo.stage == 4 and not combo.finalHit then note("final strike MISSED") end
+    if combo.is_final() and not combo.finalHit then note("final strike MISSED") end
     if combo.stage ~= 0 then note("combo ended: " .. why) end
     if combo.swordHidden then combo.swordWait = os.clock() end   -- shown again once the Archer animation is over
     combo.stage, combo.target, combo.reapply, combo.stick = 0, nil, nil, nil
@@ -3842,17 +4826,117 @@ local function dynamic_spot(a, nk)
     end
     local forced = {}
     for _, n in ipairs(order) do forced[#forced + 1] = { sides[n][1], sides[n][2], name = n } end
-    local dest, rot, dx, dz, name = warp_spot(a, nk == 4 and "head" or "side", forced)
+    local dest, rot, dx, dz, name = warp_spot(a, combo.is_final(nk) and "head" or "side", forced)
     if dest then
         combo.used[name] = true
         note(("warp to part %d: from the enemy's %s to its %s"):format(nk, cur, name))
     end
     return dest, rot, dx, dz
 end
+-- (EX slide) one candidate: the side spot d0 (facing dx0, dz0) moved back b m and sideways s m (facing kept: it slides
+-- past); with slideCheck the checks: no wall between the enemy and the start, ground within 1.5 m, the path to the enemy
+function combo.ex.slide_try(d0, dx0, dz0, s, b)
+    local len = math.sqrt(dx0 * dx0 + dz0 * dz0)
+    if len < 0.001 then return d0, dx0, dz0 end
+    local dest = Vector3f.new(d0.x - dx0 / len * b, d0.y, d0.z - dz0 / len * b)
+    local dx, dz = dx0 + dx0 / len * b, dz0 + dz0 / len * b
+    dest = Vector3f.new(dest.x - dz0 / len * s, dest.y, dest.z + dx0 / len * s)   -- facing (dx, dz) -> right = (-dz, dx)
+    if not combo.ex.slideCheck then return dest, dx, dz end
+    local why
+    local ok, err = pcall(function()
+        local tPos = combo.target:get_GameObject():get_Transform():get_Position()
+        local rad = 0.5
+        pcall(function()
+            local r = combo.target["<CharaController>k__BackingField"]:call("get_Radius")
+            if type(r) == "number" and r > 0 and r < 10 then rad = r end
+        end)
+        local ox, oz = dest.x - tPos.x, dest.z - tPos.z
+        local ol = math.sqrt(ox * ox + oz * oz)
+        if ol > rad + 0.4 then
+            local from = Vector3f.new(tPos.x + ox / ol * (rad + 0.3), tPos.y + 1.0, tPos.z + oz / ol * (rad + 0.3))
+            if nearest_hit(from, Vector3f.new(dest.x, tPos.y + 1.0, dest.z), 0.25) then why = "a wall / rock between the enemy and the start"; return end
+        end
+        local g = nearest_hit(Vector3f.new(dest.x, tPos.y + 2.0, dest.z), Vector3f.new(dest.x, tPos.y - 3.0, dest.z), 0.05)
+        if g and math.abs(g.y - tPos.y) > 1.5 then why = ("ground at the start %.1f m off the enemy's"):format(g.y - tPos.y); return end
+        if g then dest = Vector3f.new(dest.x, g.y, dest.z) end
+        local l = math.sqrt(dx * dx + dz * dz)
+        local reach = l - rad - 0.3
+        if l > 0.001 and reach > 0.3 then
+            local from = Vector3f.new(dest.x, dest.y + 1.0, dest.z)
+            local to = Vector3f.new(dest.x + dx / l * reach, dest.y + 1.0, dest.z + dz / l * reach)
+            if nearest_hit(from, to, 0.25) then why = "the path to the enemy is blocked"; return end
+        end
+    end)
+    if not ok then why = "check failed: " .. tostring(err) end
+    if why then return nil, why end
+    return dest, dx, dz
+end
+-- (EX slide, user 2026-10-27) the start spot SEARCH: the set shift, then the other side's shift, a shorter run-up, then
+-- the enemy's other sides; the first that passes is used, else skipped (the reason of the set spot noted)
+function combo.ex.slide_spot(a, nk, np, sides, first)
+    local s0 = combo.ex.slideRight * (combo.ex.slideLeft and -1 or 1)
+    local b0 = combo.ex.slideBack or 0
+    local tries, seen = {}, {}
+    for _, t in ipairs({ { s0, b0 }, { -s0, b0 }, { s0, math.min(b0, 1.0) }, { -s0, math.min(b0, 1.0) },
+                         { s0, math.min(b0, 0.6) }, { -s0, math.min(b0, 0.6) } }) do
+        local key = ("%.2f/%.2f"):format(t[1], t[2])
+        if not seen[key] then seen[key] = true; tries[#tries + 1] = t end
+    end
+    local order = { first }
+    for _, n in ipairs({ "back", "front", "left", "right" }) do if n ~= first then order[#order + 1] = n end end
+    local firstWhy
+    for si, sn in ipairs(order) do
+        local d0, r0, dx0, dz0 = warp_spot(a, "side", { { sides[sn][1], sides[sn][2], name = sn } })
+        if d0 then
+            for ti, t in ipairs(tries) do
+                local d, ddx, ddz = combo.ex.slide_try(d0, dx0, dz0, t[1], t[2])
+                if d then
+                    combo.ex.slideSpot = (si == 1 and ti == 1) and "the set spot" or
+                        ("%s side, %.1f m %s, %.1f m back%s"):format(sn, math.abs(t[1]), t[1] < 0 and "left" or "right", t[2],
+                        firstWhy and (" (set spot: " .. firstWhy .. ")") or "")
+                    note(("EX warp to part %d (%s): %s"):format(nk, np.name or np.action or "?", combo.ex.slideSpot))
+                    return d, r0, ddx, ddz
+                elseif not firstWhy then firstWhy = ddx end
+            end
+        elseif not firstWhy then firstWhy = "no room next to the enemy (" .. sn .. ")" end
+    end
+    combo.ex.skipWhy = (firstWhy or "?") .. " - and no other spot either"
+    return nil, combo.ex.skipWhy
+end
+-- (EX) the spot for an EX part: the start side ("start") or its opposite ("startopp"), else the others in turn;
+-- shiftRight: moved to the player's right (facing kept, so the slide's forward-left arc hits and it slides past)
+function combo.ex.spot(a, nk, np)
+    local sides = enemy_sides(a)
+    combo.used = combo.used or {}
+    local st = combo.startSide or "front"
+    local opp = np.spot == "startopp"
+    if np.shiftRight and combo.ex.slideFromStart then opp = not opp end   -- (user tick: the slide from the other side)
+    local first = opp and SIDE_OPP[st] or st
+    local forced = { { sides[first][1], sides[first][2], name = first } }
+    for _, n in ipairs({ "back", "front", "left", "right" }) do
+        if n ~= first then forced[#forced + 1] = { sides[n][1], sides[n][2], name = n } end
+    end
+    if np.shiftRight then return combo.ex.slide_spot(a, nk, np, sides, first) end
+    local dest, rot, dx, dz, name = warp_spot(a, np.final and "head" or "side", forced)
+    if dest then note(("EX warp to part %d (%s): the enemy's %s%s"):format(nk, np.name or np.action or "?", tostring(name), np.shiftRight and " + right" or "")) end
+    return dest, rot, dx, dz
+end
+
 local function combo_stage(a, k)
-    local part = COMBO[k]
+    local part = combo.parts[k]
     combo.stage, combo.asked, combo.started, combo.framed = k, os.clock(), nil, false
-    if k == 4 then combo.stick, combo.finalHit = nil, false end
+    if part.final then combo.stick, combo.finalHit = nil, false end
+    if part.motions then   -- (EX) a ported animation: FSM paused, played from its bank (combo.ex.update)
+        combo.mPart = true
+        combo.ex.fsm(a, true)
+        combo.ex.mi, combo.ex.cur, combo.ex.playing, combo.ex.recovering, combo.ex.full = 1, part.motions[1], false, false, false
+        combo.ex.tLast = nil
+        if combo.cue_sound then for _, id in ipairs(combo.ex.WHOOSHES[combo.ex.whoosh] or {}) do pcall(combo.cue_sound, a, id) end end
+        combo.started = os.clock()
+        note(("combo %d: EX %s"):format(k, part.name or "?"))
+        return
+    end
+    if combo.mPart then combo.mPart = nil; combo.ex.fsm(a, false) end
     if part.action:find("^Job02_") then sword_shown(false); combo.swordHidden = true; combo.swordWait = nil
     elseif combo.swordHidden then sword_shown(true); combo.swordHidden = false end
     pcall(function() combo.prevMot = motion_key(a.character.FullBodyLayer) end)
@@ -3869,7 +4953,14 @@ local function combo_update(a)
             combo.target = nil
             combo.t0 = now
             comboFx.seen, comboFx.list = {}, {}
-            pcall(a.consume_stamina, a, COMBO_STAMINA)
+            combo.parts, combo.startSide = COMBO, nil
+            combo.kiteHits, combo.kiteLastHit = 0, nil
+            if combo.ex.active() then   -- (EX) the long version; its banks loaded now (ready by part 4)
+                combo.parts = combo.ex.PARTS
+                pcall(combo.ex.bank, a, "kick"); pcall(combo.ex.bank, a, "issen")
+                combo.ex.info = "EX combo started"
+            end
+            pcall(a.consume_stamina, a, combo.parts == COMBO and COMBO_STAMINA or combo.ex.stamina)
             combo.aim, combo.aimT, combo.used = nil, now, nil
             if cfg.comboTurn and combo.pick_target then
                 local ok, t, d = pcall(combo.pick_target, a, cfg.comboTurnRange, cfg.comboTurnCone)
@@ -3902,7 +4993,7 @@ local function combo_update(a)
         combo.aimT = now
         pcall(combo.turn_to, a, combo.aim, dt, cfg.comboTurnSpeed)
     end
-    if combo.target and not combo.reapply and (combo.stage == 1 or (combo.stage == 4 and not combo.finalHit)) then
+    if combo.target and not combo.reapply and (combo.stage == 1 or (combo.is_final() and not combo.finalHit)) then
         pcall(function()
             local t = combo.target:get_GameObject():get_Transform():get_Position()
             local p = tr:get_Position()
@@ -3918,7 +5009,8 @@ local function combo_update(a)
             end
         end)
     end
-    local part = COMBO[combo.stage]
+    local part = combo.parts[combo.stage]
+    if part.motions then return combo.ex.update(a, part) end
     local cur = a:current_action(0)
     if not combo.started then
         if cur == part.action then combo.started = now
@@ -3942,11 +5034,30 @@ local function combo_update(a)
             return combo_end("the opening hit nothing")
         end
         if not is_alive(combo.target) then return combo_end("target gone") end
+        local ok, why = combo.warp_next(a)
+        if not ok then return combo_end("no spot: " .. tostring(why)) end
+    end
+end
+-- the warp to the next part (+ its start); false + why when there is no spot
+function combo.warp_next(a)
+    local tr = a.character:get_GameObject():get_Transform()
         local nk = combo.stage + 1
-        local dest, rot, dx, dz
-        if cfg.comboDynamic then dest, rot, dx, dz = dynamic_spot(a, nk)
-        else dest, rot, dx, dz = warp_spot(a, COMBO[nk].warp) end
-        if not dest then return combo_end("no spot: " .. tostring(rot)) end
+        local np = combo.parts[nk]
+        if nk == 2 then pcall(function() local _, c = enemy_sides(a); combo.startSide = c end) end   -- (EX) the start side
+        local function spot_for(k, p)
+            if p.spot then return combo.ex.spot(a, k, p)
+            elseif cfg.comboDynamic then return dynamic_spot(a, k)
+            else return warp_spot(a, p.warp) end
+        end
+        local dest, rot, dx, dz = spot_for(nk, np)
+        while not dest and np.skippable and combo.parts[nk + 1] do   -- (EX: no room for the slide -> straight to the next part)
+            note(("EX: %s skipped (%s)"):format(np.name or "part " .. nk, tostring(rot)))
+            combo.ex.skipped = (combo.ex.skipped or 0) + 1
+            nk = nk + 1
+            np = combo.parts[nk]
+            dest, rot, dx, dz = spot_for(nk, np)
+        end
+        if not dest then return false, rot end
         local useWisps = cfg.warpFx == "wisps" and not dbg.comboNoWisps
         local CUE = CUES[cfg.warpFx] or CUES.quikfot
         if useWisps then
@@ -3964,7 +5075,98 @@ local function combo_update(a)
         cues(a, useWisps and {} or CUE.arrive_efx, CUE.arrive_snd, dest, rot)
         if useWisps then pcall(wisps.burst, a, true) end
         combo_stage(a, nk)
+        return true
+end
+-- (EX) a ported-animation part, every frame: its motions in turn (cut at `to`), contact hits, then the warp on - or,
+-- if the combo stops here, the motion plays to its end (+ the recovery motion) and the combo ends
+function combo.ex.update(a, part)
+    local ex = combo.ex
+    local now = os.clock()
+    local m = ex.cur
+    if not m then return combo_end("EX: no motion") end
+    if combo.target then   -- (a destroyed target: never call into it - get_GameObject on it every frame preceded a crash)
+        local okV, valid = pcall(combo.target.get_Valid, combo.target)
+        if not okV or not valid then combo.target = nil; ex.full = true end   -- (the motion plays out, no follow / hits)
     end
+    if not ex.playing then
+        local okR, rdy = pcall(ex.ready, a, m)
+        if okR and rdy then ex.start(a, m)
+        elseif now - combo.asked > 1.5 then return combo_end("EX animation not loaded (is the DanteAnimTest pak there?)") end
+        return
+    end
+    local L = a.character:get_Motion():getLayer(0)
+    ex.n = ex.n + 1
+    if L:call("get_MotionBankID") ~= ex.banks[m[1]].bank or L:call("get_MotionID") ~= m[2] then
+        if ex.n > 3 then return combo_end(("EX interrupted (layer: bank %s motion %s)"):format(tostring(L:call("get_MotionBankID")), tostring(L:call("get_MotionID")))) end
+        return
+    end
+    -- (user: T2's hit knocks the enemy out of place, the kick / slide then miss) we move WITH the target: its
+    -- horizontal movement since the last frame is added to ours (our own motion - backflip, slide - stays)
+    if ex.follow and not ex.recovering and combo.target then pcall(function()
+        local tp = combo.target:get_GameObject():get_Transform():get_Position()
+        if ex.tLast then
+            local dx, dz = tp.x - ex.tLast.x, tp.z - ex.tLast.z
+            local d2 = dx * dx + dz * dz
+            if d2 > 1e-8 and d2 < 4 then
+                local ptr = a.character:get_GameObject():get_Transform()
+                local pp = ptr:get_Position()
+                ptr:set_Position(Vector3f.new(pp.x + dx, pp.y, pp.z + dz))
+                ex.followed = (ex.followed or 0) + math.sqrt(d2)
+            end
+        end
+        ex.tLast = Vector3f.new(tp.x, tp.y, tp.z)
+    end) end
+    local fr, endF = L:call("get_Frame") or 0, L:call("get_EndFrame") or 0
+    if m.snd and not ex.recovering and combo.cue_sound then   -- (user: sounds during the move)
+        local pf = ex.prevFr or -1
+        for _, ev in ipairs(m.snd) do
+            local e = ex.SND_LIST[ev[1]]
+            if e and e[1] ~= 0 and pf < ev[2] and fr >= ev[2] then pcall(combo.cue_sound, a, e[1]) end
+        end
+    end
+    ex.prevFr = fr
+    if part.shiftRight and ex.slideGuard and not ex.recovering and not ex.full and not ex.cutNow then pcall(function()
+        local pp = a.character:get_GameObject():get_Transform():get_Position()
+        if ex.gLast and fr > 6 and fr < (m.to or endF) - 6 then
+            local mx, mz = pp.x - ex.gLast.x, pp.z - ex.gLast.z
+            if mx * mx + mz * mz < 0.015 * 0.015 then ex.gStill = ex.gStill + 1 else ex.gStill = 0 end
+        end
+        ex.gLast = Vector3f.new(pp.x, pp.y, pp.z)
+        local why
+        if ex.gStill >= 5 then why = "pinned (no movement for 5 frames)"
+        else
+            local g = nearest_hit(Vector3f.new(pp.x, pp.y + 1.5, pp.z), Vector3f.new(pp.x, pp.y - 1.0, pp.z), 0.05)
+            if g and g.y > pp.y + 0.4 then why = ("inside the terrain (ground %.1f m above my feet)"):format(g.y - pp.y) end
+        end
+        if why then
+            ex.cutNow, ex.guardWhy = true, why
+            note(("EX slide guard: %s at frame %.0f - on to the next part"):format(why, fr))
+        end
+    end) end
+    ex.info = ("part %d: %s frame %.0f / %.0f%s"):format(combo.stage, part.name or "?", fr, endF, ex.recovering and " (recovery)" or "")
+    if m.hit and not ex.recovering and combo.target then pcall(ex.contact, a, m) end
+    if ex.n <= 3 then return end
+    local cut = (m.to and not ex.full) and m.to or endF - 0.5
+    if ex.cutNow then cut = fr end   -- (the slide guard)
+    if fr < cut then return end
+    if ex.recovering then return combo_end("done (recovery)") end
+    if not m.last then   -- the next motion of this part
+        ex.mi = ex.mi + 1
+        ex.cur, ex.playing = part.motions[ex.mi], false
+        return
+    end
+    if not ex.full then   -- this part's end frame: warp on
+        local nxt = combo.parts[combo.stage + 1]
+        if nxt and is_alive(combo.target) then
+            local ok, why = combo.warp_next(a)
+            if ok then return end
+            note("EX: no spot for the next part: " .. tostring(why))
+        end
+        ex.full = true   -- the combo stops here: this motion to its end, then the recovery
+        return
+    end
+    if part.recovery then ex.recovering, ex.cur, ex.playing = true, part.recovery, false; return end
+    return combo_end("done")
 end
 re.on_pre_application_entry("UpdateBehavior", function()
     if combo.stage == 0 and not combo.want and not combo.swordWait then return end
@@ -4049,7 +5251,19 @@ pcall(function()
     sdk.hook(sdk.find_type_definition("app.ActionManager"):get_method("requestActionCore(app.ActionManager.Priority, System.String, System.UInt32)"),
         function(args)
             if not live.am or sdk.to_int64(args[2]) ~= live.am then return end   -- (1.0) the player only
-            if ourReq or not live.on then return end
+            if ourReq or ourReqMD or not live.on then return end
+            if combo.mPart then   -- (EX) a ported animation plays: everything but damage reactions is refused
+                local skipM = false
+                pcall(function()
+                    local name = sdk.to_managed_object(args[4]):ToString()
+                    for _, pat in ipairs({ "^Dmg", "Caught", "Down", "Blown", "Slam", "Die", "Dead", "Stagger", "Grab" }) do
+                        if name:find(pat) then return end
+                    end
+                    skipM = true
+                end)
+                if skipM then return sdk.PreHookResult.SKIP_ORIGINAL end
+                return
+            end
             -- during the combo's opening: Kite Arrow's own follow-up (the kick-off jump after a hit) is refused, so the
             -- opening plays on to its end frame and the combo warps
             if combo.stage == 1 then
@@ -4697,6 +5911,7 @@ re.on_pre_application_entry("LateUpdateBehavior", function()
     end
     -- range: remember which wave shells are ours (the update() hook below scales their range)
     if not slash.rangeSet then
+        if now - (slash.waveBorn or now) > 0.5 then slash.rangeSet = true end   -- (1.2: gives up - never into a gone shell every frame)
         pcall(function()
             local comp = rec.parts[1].shell:get_GameObject():call("getComponent(System.Type)", sdk.typeof("app.ShellAdditionalJob07SubNormalAttackShell"))
             if not comp then return end
@@ -4705,6 +5920,9 @@ re.on_pre_application_entry("LateUpdateBehavior", function()
         end)
     end
     for k, t in pairs(slash.waves) do if now - t > 30 then slash.waves[k] = nil end end
+    -- (user crash 2026-10-27: ~5500 exceptions in the 30 s after slashes - the destroyed wave shell, every frame) the
+    -- meshes only feed the one-time dump: after it, no more calls into the shell
+    if SLASH.meshDumped or now - (slash.waveBorn or now) > 0.5 then return end
     local meshes = wave_meshes(rec)
     wave_mesh_dump(meshes)
     if true then return end   -- (mesh colouring + the TEST dumps below: off)
@@ -7464,6 +8682,7 @@ function sk.tick(a)
             end
             local ok = pcall(hm.call, hm, "directDamage", info, hit, me, false, myHit)
             if not ok then hm:call("directDamage", info, hit, nil, false, nil) end
+            pcall(combo.notify_hit, ch:get_GameObject(), hit, info, nil)   -- (HP bar)
             sk.hitCount = sk.hitCount + 1
             local key, now = ch:get_address(), os.clock()
             local m = sk.meters[key]
@@ -8219,9 +9438,266 @@ local md = { info = "-", lastPress = -10, above = 1.8, back = 0.0, range = 15, c
              -- (with its start effects + sound), 170/1101 = the teleport (sound 2823464530), 170/1102 the landing)
              PREP = "Job07_SkyDive", PREP_BANK = 170, WARP_MOTION = 1101, prepMax = 0.6, warpSound = 2823464530,
              -- (user: use the WHOLE SkyDive - its own targeting + teleport - and only swap the strike after the teleport)
-             mode = "ours", afterTeleport = 0.05, lockWarp = true,
+             mode = "sky", afterTeleport = 0.05, lockWarp = true, skyAimH = 0.75,   -- (2026-10-27: "sky" = SkyDive does it all)
+             landAnim = "sky",   -- (touch-down landing attack: off - a misunderstanding, code kept)
+             diveAnim = "sky",   -- (user 2026-10-27: back to SkyDive's own - with RyoteAttack_095 there was no hit; "oni" kept in the menu)
              fallSpeed = 7, strikeDepth = 0.3, ownStrike = true, dmg = 1500, react = 300, landGap = 0.5, aimBack = 0.4, headHold = 0.25 }   -- (user: from scratch - SkyDive's targeting finds nothing for a Fighter)
 dbg.misty = md
+;(function()   -- (stand probe, see tools/patch_md_standprobe.py)
+    local P = { untilT = 0, on = false, sig = nil, calls = 0, lastAct = nil, lastMode = nil }
+    dbg.standProbe = P
+    function P.start() if P.on and not json.RELEASE then P.untilT, P.sig, P.calls, P.lastAct, P.lastMode = os.clock() + 6, nil, 0, nil, nil end end
+    local function live_now() return os.clock() < P.untilT end
+    local function me() local a = runtime.player(); return a and a.character end
+    local function addr(o) local ok, v = pcall(function() return o:get_address() end); return ok and v or nil end
+    local function climber() local ch = me(); return ch and ch["<ClimbCtrl>k__BackingField"] end
+    local function mode()
+        local c = climber()
+        local out = "?"
+        pcall(function() out = ("mode %s stand %s climb %s"):format(tostring(c:call("get_Mode")), tostring(c:call("get_IsStand")), tostring(c:call("get_IsClimbing"))) end)
+        return out
+    end
+    local function hk(tn, mn, pre, post)
+        pcall(function()
+            local td = sdk.find_type_definition(tn)
+            local m = td and td:get_method(mn)
+            if not m then note("stand probe: no " .. tn .. "." .. mn); return end
+            sdk.hook(m, function(args) if live_now() then pcall(pre, args) end end,
+                function(r) if live_now() and post then local ok, v = pcall(post, r); if ok and v ~= nil then return v end end; return r end)
+        end)
+    end
+    hk("app.CharacterLandingProcessor", "checkLandingToObject", function(args)
+        local this = sdk.to_managed_object(args[2])
+        local ch = me()
+        if not this or not ch or addr(this:get_field("Chara")) ~= addr(ch) then thread.get_hook_storage().pbStand = nil; return end
+        thread.get_hook_storage().pbStand = true
+        P.calls = P.calls + 1
+        local dl, caught = "?", "?"
+        pcall(function()
+            -- (no calls into it: only its fields read - the flag word, bit 4 = DisableLanding)
+            local ts = this:get_field("TempStatus")
+            local vals = {}
+            for _, f in ipairs(ts:get_type_definition():get_fields()) do
+                if not f:is_static() then
+                    local v = ts:get_field(f:get_name())
+                    local n = tonumber(v) or (type(v) == "userdata" and pcall(sdk.to_int64, v) and nil)
+                    vals[#vals + 1] = f:get_name() .. "=" .. tostring(v)
+                    if type(v) == "number" and dl == "?" then dl = tostring(((math.tointeger(v) or 0) & 4) ~= 0) .. " (" .. f:get_name() .. ")" end
+                end
+            end
+            if not P.tsNoted then P.tsNoted = true; note("stand probe: TempStatus fields: " .. table.concat(vals, ", ")) end
+        end)
+        pcall(function() caught = tostring(ch["<CaughtController>k__BackingField"]:get_field("_IsCaught") or ch["<CaughtController>k__BackingField"]:call("get_IsCaught")) end)
+        local sig = ("climber %s | DisableLanding %s | caught %s"):format(mode(), dl, caught)
+        if sig ~= P.sig then P.sig = sig; note(("stand probe: checkLandingToObject (call %d): %s"):format(P.calls, sig)) end
+    end, function(r)
+        if thread.get_hook_storage().pbStand and P.calls <= 3 then note("stand probe:   -> returned " .. tostring(sdk.to_int64(r))) end
+    end)
+    hk("app.ObjectClimber", "tryStand", function(args)
+        local this = sdk.to_managed_object(args[2])
+        thread.get_hook_storage().pbTry = this and addr(this) == addr(climber()) or nil
+    end, function(r)
+        if thread.get_hook_storage().pbTry then note("stand probe: tryStand -> " .. tostring((sdk.to_int64(r) or 0) & 0xFF) .. " (" .. mode() .. ")") end
+    end)
+    for _, mn in ipairs({ "startStand", "startClimb", "abortClimb", "requestAbortClimb", "requestChangeToStand" }) do
+        hk("app.ObjectClimber", mn, function(args)
+            local this = sdk.to_managed_object(args[2])
+            if this and addr(this) == addr(climber()) then note("stand probe: ObjectClimber." .. mn .. " (" .. mode() .. ")") end
+        end)
+    end
+    re.on_pre_application_entry("UpdateBehavior", function()
+        if not live_now() then return end
+        pcall(function()
+            local a = runtime.player()
+            local act, md2 = tostring(a:current_action(0)), mode()
+            if act ~= P.lastAct or md2 ~= P.lastMode then
+                local pos = a.character:get_GameObject():get_Transform():get_Position()
+                note(("stand probe: action %s | %s | y %.2f"):format(act, md2, pos.y))
+                P.lastAct, P.lastMode = act, md2
+            end
+        end)
+    end)
+end)()
+-- (sky mode) the aim target SkyDive reads: Nullable<via.Position> fields on the Character, written raw (byte hasValue +
+-- 3 doubles at +8); the point high on the body (skyAimH of the way from its feet to its highest joint), root = its feet
+md.AIM_OFFS = nil
+function md.set_aim(a, t)
+    if not t then return end
+    local okV, valid = pcall(t.get_Valid, t)   -- (a destroyed target: never call into it - the 22:37 crash)
+    if not okV or not valid then md.target = nil; return end
+    local ch = a.character
+    if not md.AIM_OFFS then
+        local td = sdk.find_type_definition("app.Character")
+        md.AIM_OFFS = { td:get_field("<AimTargetUniversalPosition>k__BackingField"):get_offset_from_base(),
+                        td:get_field("<AimTargetRootUniversalPosition>k__BackingField"):get_offset_from_base() }
+    end
+    local ttr = t:get_GameObject():get_Transform()
+    local u, l = ttr:get_UniversalPosition(), ttr:get_Position()
+    local now = os.clock()
+    if not md.aimTop or md.aimTop.t ~= t or now - md.aimTop.at > 0.3 then   -- its highest joint, every 0.3 s
+        local hi = l.y + 1.2
+        pcall(function()
+            local j = ttr:call("get_Joints")
+            for i = 0, j:get_size() - 1 do local y = j[i]:get_Position().y; if y > hi then hi = y end end
+        end)
+        md.aimTop = { t = t, at = now, y = hi }
+    end
+    local off = u.y - l.y
+    local aimY = l.y + (md.aimTop.y - l.y) * md.skyAimH + off
+    local function put(setter, o, x, y, z)
+        -- 1) the game's setter with a Nullable<via.Position>
+        local ok1, e1 = pcall(function()
+            local nt = sdk.find_type_definition("System.Nullable`1<via.Position>")
+            local nv = ValueType.new(nt)
+            local pos = ValueType.new(sdk.find_type_definition("via.Position"))
+            pos.x, pos.y, pos.z = x, y, z
+            nv:set_field("_Value", pos)      -- (System.Nullable fields: _HasValue / _Value - not hasValue / value)
+            nv:set_field("_HasValue", true)
+            ch:call(setter .. "(System.Nullable`1<via.Position>)", nv)
+        end)
+        if ok1 then md.aimHow = "setter" return end
+        -- 2) raw: hasValue byte + 3 doubles at +8
+        local ok2, e2 = pcall(function()
+            ch:write_byte(o, 1); ch:write_double(o + 8, x); ch:write_double(o + 16, y); ch:write_double(o + 24, z)
+        end)
+        md.aimHow = ok2 and ("raw (setter failed: " .. tostring(e1) .. ")") or ("BOTH FAILED: " .. tostring(e1) .. " / " .. tostring(e2))
+    end
+    put("set_AimTargetUniversalPosition", md.AIM_OFFS[1], u.x, aimY, u.z)
+    put("set_AimTargetRootUniversalPosition", md.AIM_OFFS[2], u.x, u.y, u.z)
+    pcall(function() ch:set_field("<AimCharacter>k__BackingField", t) end)
+    pcall(function() ch:set_field("<AimObject>k__BackingField", t:get_GameObject()) end)
+    if not md.aimNoted then   -- once: does the game read it back?
+        md.aimNoted = true
+        local rb = "?"
+        pcall(function()
+            local v = ch:call("get_AimTargetPosition")
+            rb = v and ("hasValue %s value %s"):format(tostring(v:get_field("_HasValue")), tostring(v:get_field("_Value") and
+                ("%.1f %.1f %.1f"):format(v:get_field("_Value").x, v:get_field("_Value").y, v:get_field("_Value").z))) or "nil"
+        end)
+        note(("Misty Dive (sky): aim target written (%s) - the game reads %s; the enemy at %.1f %.1f %.1f"):format(tostring(md.aimHow), rb, l.x, l.y, l.z))
+    end
+end
+-- (dive animation swap) SkyDive's action object, for its IsDiveStart
+pcall(function()
+    sdk.hook(sdk.find_type_definition("app.Job07SkyDive"):get_method("update(via.behaviortree.ActionArg)"), function(args)
+        if md.mode ~= "sky" or not md.stage then return end
+        pcall(function() md.sdObj = sdk.to_managed_object(args[2]):add_ref() end)
+    end, function(r) return r end)
+end)
+-- (the lock-on clears the aim target every frame for a Fighter - the recorder saw "aim none" at LateUpdate although
+-- the write read back fine): written again right BEFORE SkyDive reads it, in its setDiveStartPosition
+pcall(function()
+    sdk.hook(sdk.find_type_definition("app.Job07SkyDive"):get_method("setDiveStartPosition"), function(args)
+        if md.mode ~= "sky" or not md.stage or not md.target then return end
+        pcall(function()   -- (only MY character's aim target is written - a pawn's SkyDive can't be touched)
+            local a = runtime.player()
+            md.set_aim(a, md.target)
+            md.aimAtRead = (md.aimAtRead or 0) + 1
+        end)
+    end, function(r) return r end)
+end)
+-- (alternate landing) Onimusha RyoteAttack_095 at touch-down
+md.LAND = { "ryote", 10, hit = "sword" }
+function md.land_start(a)
+    md.stage, md.landT, md.landPlaying, md.landN = "land", os.clock(), false, 0
+    pcall(combo.ex.bank, a, "ryote")
+    combo.mPart = true   -- (the game's own landing / locomotion requests refused while it plays)
+    combo.target = md.target
+    note("Misty Dive: touch-down - Onimusha RyoteAttack_095")
+end
+function md.land_end(a, why)
+    combo.mPart = nil
+    pcall(combo.ex.fsm, a, false)
+    combo.target = nil
+    ourReqMD = true
+    pcall(a.request_action, a, a:is_grounded() == false and "WaitToFall" or "NormalLocomotion", 0)
+    ourReqMD = false
+    md.stage, md.landPlaying = nil, false
+    md.info = "landing attack: " .. tostring(why)
+    note("Misty Dive: " .. md.info)
+end
+function md.land_update(a, now)
+    local m = md.LAND
+    if not md.landPlaying then
+        local okR, rdy = pcall(combo.ex.ready, a, m)
+        if okR and rdy then
+            combo.ex.fsm(a, true)
+            local L = a.character:get_Motion():getLayer(0)
+            L:call(combo.ex.CHANGE, combo.ex.banks.ryote.bank, m[2], 0.0, 3.0, 1, 1)
+            L:call("set_Speed", 1.0)
+            md.landPlaying, md.landN = true, 0
+            combo.ex.touch, combo.ex.lastHit = false, 0
+        elseif now - md.landT > 1.0 then return md.land_end(a, "animation not loaded (DanteAnimTest pak?)") end
+        return
+    end
+    local L = a.character:get_Motion():getLayer(0)
+    md.landN = md.landN + 1
+    if L:call("get_MotionBankID") ~= combo.ex.banks.ryote.bank or L:call("get_MotionID") ~= m[2] then
+        if md.landN > 3 then return md.land_end(a, "interrupted") end
+        return
+    end
+    if combo.target then
+        local okV, valid = pcall(combo.target.get_Valid, combo.target)
+        if okV and valid then pcall(combo.ex.contact, a, m) else combo.target = nil end
+    end
+    local fr, endF = L:call("get_Frame") or 0, L:call("get_EndFrame") or 0
+    if md.landN > 3 and fr >= endF - 0.5 then return md.land_end(a, "done") end
+end
+-- RyoteAttack_095 from SkyDive's dive start: FSM paused (SkyDive's action still moves us), changed once
+function md.dive_anim(a)
+    if md.diveOn == "done" then return end
+    local dv = false
+    pcall(function() dv = md.sdObj and md.sdObj:get_field("IsDiveStart") == true end)
+    if not dv then pcall(combo.ex.bank, a, "ryote"); return end   -- (the bank loads while SkyDive prepares)
+    local L = a.character:get_Motion():getLayer(0)
+    if not md.diveOn then
+        local okR, rdy = pcall(combo.ex.ready, a, md.LAND)
+        if not (okR and rdy) then return end
+        combo.ex.fsm(a, true)
+        L:call(combo.ex.CHANGE, combo.ex.banks.ryote.bank, md.LAND[2], 0.0, 3.0, 1, 1)
+        L:call("set_Speed", 1.0)
+        md.diveOn = true
+        note("Misty Dive: SkyDive's dive started - RyoteAttack_095")
+        return
+    end
+    -- held: if something switched the layer back, ours again; at its end frame it stays on the last pose
+    if L:call("get_MotionBankID") ~= combo.ex.banks.ryote.bank or L:call("get_MotionID") ~= md.LAND[2] then
+        L:call(combo.ex.CHANGE, combo.ex.banks.ryote.bank, md.LAND[2], L:call("get_Frame") or 0.0, 0.0, 1, 1)
+    elseif (L:call("get_Frame") or 0) >= (L:call("get_EndFrame") or 999) - 1 then
+        L:call("set_Speed", 0.0)
+    end
+end
+-- after SkyDive: the fall goes on (its action runs, gravity), our pose stays (FSM paused, last frame every frame)
+function md.dive_hold(a, now)
+    local grounded = false
+    pcall(function() grounded = a.character:call("get_IsGround") == true end)
+    if grounded or now - (md.holdT or now) > 4.0 then
+        md.diveOn = false
+        pcall(combo.ex.fsm, a, false)
+        md.stage = nil
+        md.info = grounded and "landed (RyoteAttack_095 pose held in the fall)" or "pose hold timed out (4 s)"
+        note("Misty Dive: " .. md.info)
+        return
+    end
+    pcall(function()
+        local L = a.character:get_Motion():getLayer(0)
+        local bank, id = combo.ex.banks.ryote.bank, md.LAND[2]
+        if L:call("get_MotionBankID") ~= bank or L:call("get_MotionID") ~= id then
+            L:call(combo.ex.CHANGE, bank, id, 70.0, 0.0, 1, 1)
+        end
+        local endF = L:call("get_EndFrame") or 71
+        L:call("set_Speed", 0.0)
+        L:call("set_Frame", math.max(0, endF - 1))
+    end)
+end
+function md.clear_aim(a)
+    if not md.AIM_OFFS then return end
+    pcall(function()
+        local ch = a.character
+        ch:write_byte(md.AIM_OFFS[1], 0); ch:write_byte(md.AIM_OFFS[2], 0)
+        ch:set_field("<AimCharacter>k__BackingField", nil); ch:set_field("<AimObject>k__BackingField", nil)
+    end)
+end
 local IDS, NAMES = {}, {}
 pcall(function()
     for _, f in ipairs(sdk.find_type_definition("app.HumanCustomSkillID"):get_fields()) do
@@ -8352,6 +9828,7 @@ function md.strike(a, F, why)
             pcall(function() info.DamageReaction = md.react end)
             local ok = pcall(hm.call, hm, "directDamage", info, t["<Hit>k__BackingField"], a.character:get_GameObject(), false, a.character["<Hit>k__BackingField"])
             if not ok then hm:call("directDamage", info, t["<Hit>k__BackingField"], nil, false, nil) end
+            pcall(combo.notify_hit, t:get_GameObject(), t["<Hit>k__BackingField"], info, nil)   -- (HP bar)
         end)
         note(("Misty Dive: strike (%s) - the blade hadn't hit: our hit %.0f"):format(why, md.dmg))
     else note(("Misty Dive: strike (%s) - the Empale's blade hit"):format(why)) end
@@ -8469,6 +9946,8 @@ local function start(a)
     md.seenDive = {}
     md.stage, md.prepT, md.prepStarted, md.teleportAt, md.lockXZ = "prep", os.clock(), nil, nil, nil
     md.target = nil   -- (SkyDive's own targeting finds nothing for a Fighter: our pick, used at its teleport)
+    md.aimNoted, md.noTargetNoted = false, false
+    md.diveOn, md.sdObj = false, nil
     local t, d, why = md.pick(a)
     if t then
         md.target = t:add_ref()
@@ -8491,6 +9970,8 @@ local function update(a)
         if not md.stage then local ok, e = pcall(start, a); if not ok then md.info = "failed: " .. tostring(e); md.stage = nil end end
     end
     if not md.stage then return end
+    if md.stage == "land" then return md.land_update(a, now) end
+    if md.stage == "diveHold" then return md.dive_hold(a, now) end
     if md.stage == "prep" then   -- until SkyDive reaches its teleport (motion 1101), then our warp + dive
         local cur = tostring(a:current_action(0) or "")
         if cur == md.PREP then md.prepStarted = md.prepStarted or now end
@@ -8499,6 +9980,31 @@ local function update(a)
             local L = a.character.FullBodyLayer
             teleport = L:call("get_MotionBankID") == md.PREP_BANK and L:call("get_MotionID") == md.WARP_MOTION
         end)
+        if md.mode == "sky" then   -- (2026-10-27) SkyDive does it all; we only feed it the aim target every frame
+            local okA, eA = pcall(md.set_aim, a, md.target)
+            if md.diveAnim == "oni" and md.prepStarted then pcall(md.dive_anim, a) end
+            if not okA and md.aimErr ~= tostring(eA) then md.aimErr = tostring(eA); note("Misty Dive (sky): aim target FAILED: " .. md.aimErr) end
+            if not md.target and not md.noTargetNoted then md.noTargetNoted = true; note("Misty Dive (sky): no enemy picked - SkyDive aims at nothing") end
+            if md.prepStarted then
+                if not cur:find("^Job07_SkyDive") then   -- its dive + landing over (or something else took over)
+                    md.clear_aim(a)
+                    if md.diveOn then   -- (user: it changed to the fall animation) frozen on our last frame until grounded
+                        local grounded = false
+                        pcall(function() grounded = a.character:call("get_IsGround") == true end)
+                        if not grounded then
+                            md.stage, md.holdT = "diveHold", now
+                            note("Misty Dive: SkyDive over in the air - holding RyoteAttack_095's last pose until I land")
+                            return
+                        end
+                        md.diveOn = false; pcall(combo.ex.fsm, a, false)
+                    end
+                    if md.landAnim == "oni" then return md.land_start(a) end
+                    md.stage = nil; md.info = "SkyDive done (now " .. cur .. ")"; note("Misty Dive (sky): " .. md.info)
+                elseif now - md.prepStarted > 5 then md.stage = nil; md.info = "SkyDive timed out"; md.clear_aim(a) end
+            elseif now - md.prepT > 0.6 then md.stage = nil; md.info = "SkyDive did not start (" .. cur .. ")"; md.clear_aim(a)
+            else request(a, md.PREP) end
+            return
+        end
         if md.mode == "msp" and md.prepStarted then
             -- SkyDive teleports by itself; a moment after its teleport its strike becomes the air Empale
             if teleport and not md.teleportAt then md.teleportAt = now end
@@ -8851,6 +10357,7 @@ function md.press()
         if not okA then note("Misty Dive: not now (" .. tostring(cur) .. ")") end
     end
     note(("Misty Dive press%s%s"):format(air and " (in the air)" or "", can and "" or " - refused: the game's skill track is closed"))
+    if dbg.standProbe then dbg.standProbe.start() end
     if can then dbg.stam_cost(runtime.player(), "Misty Dive", md.stamina or 110) end
     if can then md.lastPress, md.want, md.fromAir = now, true, air end
 end
@@ -9389,6 +10896,8 @@ end)()
                 local ok, e1 = pcall(hm.call, hm, "directDamage", info, th, me, false, myHit)
                 local how = "with owner"
                 if not ok then how = "without owner (" .. tostring(e1) .. ")"; hm:call("directDamage", info, th, nil, false, nil) end
+                pcall(combo.notify_hit, sh.target:get_GameObject(), th, info, at)   -- (HP bar)
+                bm.lastDmg = dmg
                 bm.info = ("hit %s for %.0f (%s)"):format(tostring(sh.target:get_GameObject():get_Name()), dmg, src)
                 local after = "?"
                 pcall(function() after = ("type %s, reaction %.0f"):format(tostring(info.DamageType), info.DamageReaction) end)
@@ -9531,7 +11040,10 @@ end)()
             if t > bm.grow + bm.hold then w = w * (1 - (t - bm.grow - bm.hold) / math.max(0.001, bm.fade)) end
             if w <= 0 then clear_shot(); return end
             if frac >= 1 and not sh.arrived then sh.arrived = now end
-            if sh.arrived and not sh.hit and now - sh.arrived >= bm.hitDelay then sh.hit = true; hit(a, sh, aim, { x = dx, y = dy, z = dz }) end
+            if sh.arrived and not sh.hit and now - sh.arrived >= bm.hitDelay then
+                sh.hit = true; hit(a, sh, aim, { x = dx, y = dy, z = dz })
+                pcall(combo.hit_world, palm, aim, bm.lastDmg or bm.dmg, "Eldritch Blast")   -- (breakables on its path)
+            end
             local span = bm.to - bm.from
             if math.abs(span) < 0.1 then span = span < 0 and -0.1 or 0.1 end
             local sg = span < 0 and -1 or 1
@@ -10255,6 +11767,7 @@ end)()
                 pcall(function() info.IgnoreBalanceReactionCalc = true end)
                 local ok = pcall(hm.call, hm, "directDamage", info, t["<Hit>k__BackingField"], a.character:get_GameObject(), false, a.character["<Hit>k__BackingField"])
                 if not ok then hm:call("directDamage", info, t["<Hit>k__BackingField"], nil, false, nil) end
+                pcall(combo.notify_hit, t:get_GameObject(), t["<Hit>k__BackingField"], info, nil)   -- (HP bar)
                 note("Hellish Rebuke: flinch hit")
             end) end
             return
@@ -10819,7 +12332,7 @@ end)()
         hr.lastCast = dbg.gclock()
         cast(a, o.who)
     end)
-    re.on_frame(function()   -- (4.13) the Mage cast bank (9112) kept on me while Pactblade is on
+    re.on_pre_application_entry("UpdateBehavior", function()   -- (4.13) the Mage cast bank (9112) kept on me while Pactblade is on (1.2: off the render callback)
         if not live.on or os.clock() < (hr.nextBank or 0) or not dbg.castT then return end
         hr.nextBank = os.clock() + 5
         pcall(function() dbg.castT.bank(runtime.player()) end)
@@ -11666,6 +13179,179 @@ re.on_draw_ui(function()
         ch, cfg.comboNoDust = imgui.checkbox("   no dust from the Archfey Combo's Rush parts", cfg.comboNoDust)
         if ch then save_cfg() end
         title("Archfey Combo")
+        if imgui.tree_node("   Archfey Combo EX") then
+            local ex = combo.ex
+            local _
+            local before = {}
+            for _, k in ipairs(ex.SAVE) do before[k] = ex[k] end
+            for _, pt in ipairs(ex.PARTS) do for _, mm in ipairs(pt.motions or {}) do
+                before["cut" .. mm[1] .. mm[2]] = mm.to
+                for i, ev in ipairs(mm.snd or {}) do before["snd" .. mm[1] .. mm[2] .. i] = ev[1] .. "@" .. ev[2] end
+            end end
+            -- TOP: on / off + what happened
+            local MODES = { "auto", "on", "off" }
+            local mi = ({ auto = 1, on = 2, off = 3 })[ex.mode] or 1
+            local chm, nv = imgui.combo("EX##ex", mi, { "auto (when the sword has Cloudfall Strike)", "always on", "off" })
+            if chm then ex.mode = MODES[nv] end
+            imgui.text(("sword has Cloudfall Strike: %s  -  Archfey Combo level %d  -  EX is %s  (name: %s)"):format(ex.weapon_has() and "YES" or "no",
+                ex.level(), ex.active() and "ON" or "off", tostring(ex.nameNow or "-")))
+            _, ex.needLv2 = imgui.checkbox("auto needs Archfey Combo at level 2 (the game's EX rule)##ex", ex.needLv2)
+            imgui.text("last hit: " .. tostring(ex.lastHitInfo) .. (ex.skipWhy and ("  |  last slide skip: " .. ex.skipWhy) or ""))
+            if ex.seInfo then imgui.text("last hit sound: " .. ex.seInfo) end
+
+            -- (user: "very hard to find stuff") each section its own colour: the header text + its sliders / dropdowns
+            local function sec(label, text, bg, bgHi)
+                imgui.push_style_color(0, text)
+                local open = imgui.tree_node(label)
+                imgui.pop_style_color(1)
+                if open then
+                    imgui.push_style_color(7, bg); imgui.push_style_color(8, bgHi); imgui.push_style_color(9, bgHi)
+                    imgui.push_style_color(21, bg); imgui.push_style_color(22, bgHi); imgui.push_style_color(23, bgHi)
+                end
+                return open
+            end
+            local function sec_end() imgui.pop_style_color(6); imgui.tree_pop() end
+            -- HIT SOUNDS: type per move + play
+            local SE_T = { "SlashLow", "SlashMiddle", "SlashHigh", "BlowLow", "BlowMiddle", "BlowHigh", "ShootLow", "ShootMiddle",
+                "ShootHigh", "BiteLow", "BiteMiddle", "BiteHigh", "Possession", "Gas", "Ch224ContactS", "Ch224ContactL", "DualBladeLow",
+                "DualBladeMiddle", "DualBladeHigh", "IncenseBurner" }
+            if sec("Hit sounds##exA", 0xFF40D0FF, 0xFF1E5A6E, 0xFF2A7A94) then
+                imgui.text("Plays on the nearest enemy. Hit that enemy once normally first (it needs a real hit's material).")
+                local k1, n1 = imgui.combo("kick##exse", ex.seKick + 1, SE_T); if k1 then ex.seKick = n1 - 1 end
+                imgui.same_line(); if imgui.button("play##exsek") then ex.seQueue = ex.seKick; ex.seQueueLoud = ex.loudKick end
+                local k2, n2 = imgui.combo("slide##exse", ex.seSlide + 1, SE_T); if k2 then ex.seSlide = n2 - 1 end
+                imgui.same_line(); if imgui.button("play##exses") then ex.seQueue = ex.seSlide; ex.seQueueLoud = ex.loudSlide end
+                local cl1, vl1 = imgui.slider_int("kick loudness (x times at once)##exse", ex.loudKick, 1, 4); if cl1 then ex.loudKick = vl1 end
+                local cl2, vl2 = imgui.slider_int("slide loudness (x times at once)##exse", ex.loudSlide, 1, 4); if cl2 then ex.loudSlide = vl2 end
+                imgui.text(ex.sePrevInfo or "-")
+                _, ex.impact = imgui.checkbox("hit sounds on##ex", ex.impact)
+                _, ex.calcEnd = imgui.checkbox("show the damage on the enemy's HP bar (like a real hit)##ex", ex.calcEnd)
+                sec_end()
+            end
+
+            -- FINE-TUNING: everything that was tuned once
+                            local TYPES = { "None", "Wind_S", "Wind_M", "Wind_L", "Quake_S", "Quake_L", "Hitback_S", "Hitback_M", "Hitback_L", "Hitback_LL",
+                    "Hitback_LLL", "Hitdown_S", "HitdownQuick_S", "Hitdown_L", "HitdownQuick_L", "Slam_S", "Slam_L", "Upper_S", "Upper_L",
+                    "Blown_S", "Blown_L", "Dialog_Blown_S", "Dialog_Blown_L", "FlashFlood" }
+                if sec("Damage + reactions##exB1", 0xFF6060FF, 0xFF22227A, 0xFF3030A4) then
+                    _, ex.dmg = imgui.slider_float("kick damage (teleport hit 2 does ~4800)##ex", ex.dmg, 0, 10000, "%.0f")
+                    _, ex.dmgSlide = imgui.slider_float("slide damage (teleport hit 1 does ~2600)##ex", ex.dmgSlide, 0, 10000, "%.0f")
+                    local c1, v1 = imgui.combo("kick reaction##ex", ex.typeKick + 2, TYPES); if c1 then ex.typeKick = v1 - 2 end
+                    _, ex.react = imgui.slider_float("kick stagger power##ex", ex.react, 0, 10000, "%.0f")
+                    local c2, v2 = imgui.combo("slide reaction##ex", ex.typeSlide + 2, TYPES); if c2 then ex.typeSlide = v2 - 2 end
+                    _, ex.reactSlide = imgui.slider_float("slide stagger power##ex", ex.reactSlide, 0, 10000, "%.0f")
+                    _, ex.t2Weaken = imgui.checkbox("teleport hit 2 weaker in the EX combo##ex", ex.t2Weaken)
+                    local c3, v3 = imgui.combo("teleport hit 2 reaction##ex", ex.t2Type + 2, TYPES); if c3 then ex.t2Type = v3 - 2 end
+                    _, ex.t2React = imgui.slider_float("teleport hit 2 stagger power##ex", ex.t2React, 0, 10000, "%.0f")
+                    _, ex.finStrong = imgui.checkbox("last hit (falling strike) stronger in the EX combo##ex", ex.finStrong)
+                    local c5, v5 = imgui.combo("last hit reaction##ex", ex.finType + 2, TYPES); if c5 then ex.finType = v5 - 2 end
+                    _, ex.finReact = imgui.slider_float("last hit stagger power##ex", ex.finReact, 0, 10000, "%.0f")
+                    _, ex.force = imgui.checkbox("through the enemy's attack armour##ex", ex.force)
+                    _, ex.stamina = imgui.slider_float("stamina cost##ex", ex.stamina, 0, 1000, "%.0f")
+                    sec_end()
+                end
+                if sec("Slide position##exB2", 0xFF60FF60, 0xFF2A6A22, 0xFF3A9030) then
+                    _, ex.slideRight = imgui.slider_float("sideways shift (m)##ex", ex.slideRight, -2.0, 2.0, "%.2f")
+                    _, ex.slideLeft = imgui.checkbox("shift to the LEFT##ex", ex.slideLeft == true)
+                    _, ex.slideBack = imgui.slider_float("start further back (m)##ex", ex.slideBack, 0.0, 5.0, "%.2f")
+                    _, ex.slideFromStart = imgui.checkbox("from the start side instead of the opposite##ex", ex.slideFromStart == true)
+                    _, ex.slideCheck = imgui.checkbox(("check the start spot, try others, skip when none fits (skipped %d x)##ex"):format(ex.skipped or 0), ex.slideCheck)
+                    if ex.slideSpot then imgui.text("      last start: " .. ex.slideSpot) end
+                    _, ex.slideGuard = imgui.checkbox("guard: cut the slide when pinned / inside the terrain##ex", ex.slideGuard)
+                    if ex.guardWhy then imgui.text("      last cut: " .. ex.guardWhy) end
+                    _, ex.follow = imgui.checkbox("move with the enemy during the new moves##ex", ex.follow)
+                    sec_end()
+                end
+                if sec("Camera##exB3", 0xFFFFB060, 0xFF7A3C1E, 0xFFA0502A) then
+                    _, ex.zoom = imgui.checkbox("zoom out during kick + backflip + slide##ex", ex.zoom)
+                    _, ex.zoomEarly = imgui.checkbox("   ...already from Kite Arrow's 2nd kick##ex", ex.zoomEarly)
+                    _, ex.zoomBack = imgui.slider_float("further back (m)##ex", ex.zoomBack, 0.0, 5.0, "%.2f")
+                    _, ex.zoomUp = imgui.slider_float("higher (m)##ex", ex.zoomUp, -1.0, 2.0, "%.2f")
+                    _, ex.zoomIn = imgui.slider_float("ease out (s)##ex", ex.zoomIn, 0.05, 1.0, "%.2f")
+                    _, ex.zoomOut = imgui.slider_float("ease back (s)##ex", ex.zoomOut, 0.05, 1.5, "%.2f")
+                    sec_end()
+                end
+                if sec("Timing + sounds during the moves##exB4", 0xFF3090FF, 0xFF14467A, 0xFF1C5EA4) then
+                    local cw, vw = imgui.combo("whoosh when a new move starts##ex", ex.whoosh, { "none", "RushAttack's", "RushAttackFinish's", "both" })
+                    if cw then ex.whoosh = vw end
+                    local labels = {}
+                    for i, e in ipairs(ex.SND_LIST) do labels[i] = e[2] end
+                    for _, pt in ipairs(ex.PARTS) do
+                        for _, mm in ipairs(pt.motions or {}) do
+                            local nm = (mm[1] == "kick" and mm[2] == 6) and "kick" or (mm[1] == "kick") and "backflip" or "slide"
+                            imgui.text(nm)
+                            local chf, v = imgui.slider_float(("   ends (teleport) at frame##ex%s%d"):format(mm[1], mm[2]), mm.to or 0, 0, 300, "%.0f")
+                            if chf then mm.to = v end
+                            for i, ev in ipairs(mm.snd or {}) do
+                                local cs, vs = imgui.combo(("   sound %d##exs%s%d%d"):format(i, mm[1], mm[2], i), ev[1], labels)
+                                if cs then ev[1] = vs end
+                                local cf, vf = imgui.slider_float(("   sound %d at frame##exf%s%d%d"):format(i, mm[1], mm[2], i), ev[2], 0, 120, "%.0f")
+                                if cf then ev[2] = vf end
+                            end
+                        end
+                    end
+                    sec_end()
+                end
+                if sec("Hit zones##exB5", 0xFFC080FF, 0xFF5A2A6E, 0xFF7A3A94) then
+                    _, ex.legR = imgui.slider_float("kick zone thickness (m)##ex", ex.legR, 0.02, 0.5, "%.2f")
+                    _, ex.bladeR = imgui.slider_float("blade zone thickness (m)##ex", ex.bladeR, 0.02, 0.5, "%.2f")
+                    _, ex.bladeLen = imgui.slider_float("blade length (m)##ex", ex.bladeLen, 0.3, 2.0, "%.2f")
+                    _, ex.rehit = imgui.slider_float("min. time between hits (s)##ex", ex.rehit, 0.05, 1.0, "%.2f")
+                    _, ex.spark = imgui.checkbox("purple impact effect##ex", ex.spark)
+                    sec_end()
+                end
+
+            -- DEBUG: research tools
+            if sec("Debug / research (not needed for playing)##exC", 0xFFB0B0B0, 0xFF404040, 0xFF585858) then
+                imgui.text(("%s | contact hits %d | gap %s | followed %.1f m"):format(ex.info, ex.hits, ex.gap and ("%.2f m"):format(ex.gap) or "-", ex.followed or 0))
+                if imgui.tree_node("all hit sound types (play / pick)##exsep") then
+                    for i, nm in ipairs(SE_T) do
+                        if imgui.button(("play##sep%d"):format(i)) then ex.seQueue = i - 1 end
+                        imgui.same_line(); if imgui.button(("kick##sek%d"):format(i)) then ex.seKick = i - 1 end
+                        imgui.same_line(); if imgui.button(("slide##ses%d"):format(i)) then ex.seSlide = i - 1 end
+                        imgui.same_line(); imgui.text(("%2d. %s%s%s"):format(i - 1, nm, ex.seKick == i - 1 and "  <- kick" or "", ex.seSlide == i - 1 and "  <- slide" or ""))
+                    end
+                    imgui.tree_pop()
+                end
+                local chT
+                chT, ex.seTraceOn = imgui.checkbox("trace the enemy's hit-sound steps##exst", ex.seTraceOn == true)
+                if chT and ex.seTraceOn then ex.seTrace = {} end
+                if ex.seTraceOn and imgui.tree_node("the trace##exst") then
+                    for _, l in ipairs(ex.seTrace or {}) do imgui.text(l) end
+                    if imgui.button("save it for Claude##exst") then pcall(json.dump_file, "Pactblade_se_trace.json", ex.seTrace or {}) end
+                    imgui.tree_pop()
+                end
+                imgui.text("listeners of a real hit's notification: " .. tostring(ex.listeners or "(after the first EX hit)"))
+                _, ex.logAll = imgui.checkbox("log all my hits (not only the combo's)##exse", ex.logAll)
+                if imgui.tree_node("hit log (type / effect / sound / reaction)##ex") then
+                    for _, l in ipairs(combo.hitLog or { "(none yet)" }) do imgui.text(l) end
+                    imgui.tree_pop()
+                end
+                if imgui.tree_node("old sound tester (recorded sound ids)##ex") then
+                    imgui.text(ex.testInfo or "press play")
+                    for i, e in ipairs(ex.SND_LIST) do
+                        if e[1] ~= 0 then
+                            if imgui.button(("play##ext%d"):format(i)) then ex.testQueue = e end
+                            imgui.same_line(); imgui.text(("%2d. %s (%d)"):format(i, e[2], e[1]))
+                        end
+                    end
+                    imgui.tree_pop()
+                end
+                local c4, v4 = imgui.combo("old kick sound (only if the game's hit sound fails)##ex", ex.kickSnd, { "Kite Arrow hit 2", "Kite Arrow hit 1", "both", "Skydragon impact" })
+                if c4 then ex.kickSnd = v4 end
+                sec_end()
+            end
+
+            local changed = false
+            for _, k in ipairs(ex.SAVE) do if before[k] ~= ex[k] then changed = true end end
+            for _, pt in ipairs(ex.PARTS) do for _, mm in ipairs(pt.motions or {}) do
+                if before["cut" .. mm[1] .. mm[2]] ~= mm.to then changed = true end
+                for i, ev in ipairs(mm.snd or {}) do if before["snd" .. mm[1] .. mm[2] .. i] ~= ev[1] .. "@" .. ev[2] then changed = true end end
+            end end
+            if changed then ex.saveAt = os.clock() + 0.5 end   -- (saved once the slider rests)
+            if ex.saveAt and os.clock() >= ex.saveAt then ex.saveAt = nil; ex.save() end
+            imgui.tree_pop()
+        end
         ch, cfg.comboDynamic = imgui.checkbox("   warps go around the enemy (opposite, then the free sides; off = fixed spots)", cfg.comboDynamic)
         if ch then save_cfg() end
         ch, cfg.finisherHeight = imgui.slider_float("   air finisher height (m above / below its head)", cfg.finisherHeight, -1.5, 1.5, "%.2f")
@@ -12007,9 +13693,16 @@ re.on_draw_ui(function()
             chd, md.dmg = imgui.slider_float("damage when the blade misses##md", md.dmg, 0, 5000, "%.0f")
             chd, md.aimBack = imgui.slider_float("body this far on my side of it (the blade is in front) (m)##md", md.aimBack, 0, 1.5, "%.2f")
             chd, md.landGap = imgui.slider_float("landing: keep this far off its body (m)##md", md.landGap, 0, 3, "%.1f")
-            local mpick = md.mode == "ours" and 2 or 1
-            chd, mpick = imgui.combo("teleport", mpick, { "SkyDive's teleport, then moved above the enemy", "ours (above the enemy in front)" })
-            if chd then md.mode = mpick == 2 and "ours" or "msp" end
+            local mpick = md.mode == "ours" and 2 or md.mode == "sky" and 3 or 1
+            chd, mpick = imgui.combo("teleport", mpick, { "SkyDive's teleport, then moved above the enemy", "ours (above the enemy in front)",
+                "SkyDive does it all (Mystic Spearhand way, lands on big enemies)" })
+            if chd then md.mode = ({ "msp", "ours", "sky" })[mpick] end
+            if md.mode == "sky" then
+                chd, md.skyAimH = imgui.slider_float("   aim point: how high on its body (0 = feet, 1 = its top)##md", md.skyAimH, 0, 1, "%.2f")
+                local dp = md.diveAnim == "oni" and 2 or 1
+                chd, dp = imgui.combo("   dive animation##mddive", dp, { "SkyDive's own", "Onimusha RyoteAttack_095" })
+                if chd then md.diveAnim = dp == 2 and "oni" or "sky" end
+            end
             chd, md.afterTeleport = imgui.slider_float("air Empale after SkyDive's teleport (s)", md.afterTeleport, 0, 0.5, "%.2f")
             chd, md.above = imgui.slider_float("height above the enemy's head (m)", md.above, 0.5, 6, "%.1f")
             chd, md.back = imgui.slider_float("toward me from the enemy (m)", md.back, 0, 4, "%.1f")
@@ -12034,6 +13727,15 @@ re.on_draw_ui(function()
             imgui.text_colored("Last " .. combo.result.text, combo.result.ok and 0xFF40FF40 or 0xFF4040FF)
         end
         imgui.text(tostring(dbg.thief or "Footpad / Controlled Fall: -"))
+        if dbg.diveRec then
+            local chd
+            chd, dbg.diveRec.on = imgui.checkbox("record Misty Dive / SkyDive (research): " .. dbg.diveRec.info, dbg.diveRec.on)
+        end
+        do
+            local pz = dbg.pawnFreeze
+            local chp, v = imgui.checkbox(("pawns stand still (their AI off; %d pawn(s))"):format(pz.n or 0), pz.on)
+            if chp then pz.on = v; pz.next = 0; if not v then pcall(pz.apply, false) end end
+        end
         imgui.text(("Test dummies: %d | %s"):format(dummy.count, dummy.status))
         for _, d in ipairs(DUMMIES) do
             if imgui.button("Spawn " .. d.name) then require("DragonCore.game.actor_fx").defer(function() dummy_spawn(d) end) end

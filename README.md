@@ -4,7 +4,7 @@ A custom vocation for Dragon's Dogma 2: a pact-bound swordsman with a fast, magi
 eldritch magick in the other. No shield. Inspired by the D&D 5e warlock (names only).
 
 Pactblade is built on **Vocation & Skill Builder (VSB)** as a Fighter vocation and runs as a REFramework script.
-Play it as Fighter, or as Warfarer with a sword. Version **1.1.2**.
+Play it as Fighter, or as Warfarer with a sword. Version **1.2**.
 
 **This repository is the script-only edition:** only my own files - the Lua script, its Dimension Door module, the
 VSB pack (the vocation and skill definitions), the default settings and the guides. It carries **no game files and
@@ -125,6 +125,15 @@ Jump
 
 ## Changelog
 
+**1.2**
+- All of Pactblade's own hits (Eldritch Blast, Caustic Brew, Hellish Rebuke, Misty Dive's strike) now register on the
+  enemy's health bar like normal hits, with the grey "damage taken" segment.
+- Misty Dive now uses the game's own plunge, aimed at the enemy you picked: it lands on the body of big monsters
+  reliably and no longer misses or drops beside them.
+- Fixed: after every Eldritch Slash the script kept calling into the finished wave for 30 s (thousands of errors in
+  the REFramework log), which could lead to a crash later.
+- Fixed: an animation check ran on the render thread; it now runs with the game's own update (a possible crash).
+
 **1.1.2**
 - Dimension Door: getting hit while aiming no longer leaves the character stuck in the casting pose - the spell is
   cancelled and the hit reaction plays. Loading a save while aiming also resets the spell.
@@ -155,7 +164,7 @@ Jump
 
 ## Settings
 
-REFramework menu (Insert) → Script Generated UI → **Pactblade 1.1.2**: Nox sword look on/off, arm effect on/off, the spell slot display (on/off, position, size), and
+REFramework menu (Insert) → Script Generated UI → **Pactblade 1.2**: Nox sword look on/off, arm effect on/off, the spell slot display (on/off, position, size), and
 **Dimension Door** (on/off, also for other vocations, the key, range, how long a door stays open, the door's look).
 
 ## Safe for your save and online
