@@ -10,7 +10,7 @@ Play it as Fighter, or as Warfarer with a sword. Version **1.1.2**.
 VSB pack (the vocation and skill definitions), the default settings and the guides. It carries **no game files and
 nothing made from them**: the recoloured effects and the sound bank are not here. Without them Pactblade plays, but its
 effects show in the game's own colours and its own sounds are silent. The full package (with the effect / sound pak) is
-on Nexus Mods.
+on Nexus Mods: **https://www.nexusmods.com/dragonsdogma2/mods/2164**
 
 ## Requirements
 
