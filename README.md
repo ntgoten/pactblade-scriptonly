@@ -4,7 +4,7 @@ A custom vocation for Dragon's Dogma 2: a pact-bound swordsman with a fast, magi
 eldritch magick in the other. No shield. Inspired by the D&D 5e warlock (names only).
 
 Pactblade is built on **Vocation & Skill Builder (VSB)** as a Fighter vocation and runs as a REFramework script.
-Play it as Fighter, or as Warfarer with a sword. Version **1.2**.
+Play it as Fighter, or as Warfarer with a sword. Version **1.3**.
 
 **This repository is the script-only edition:** only my own files - the Lua script, its Dimension Door module, the
 VSB pack (the vocation and skill definitions), the default settings and the guides. It carries **no game files and
@@ -75,7 +75,7 @@ Learned at the Vocation Guild with Discipline (DCP), equipped like any weapon sk
 | Eldritch Slash | 1 | 300 | A sweeping arc of eldritch force that cleaves foes from afar (sword hit x2, the wave x3 damage). |
 | Tasha's Caustic Brew | 1 | 300 | A chant, then a torrent of acid that washes over the foes before you and poisons them. |
 | Misty Strike | 2 | 500 | Step through the mist behind a foe and strike before they can turn. Works from a jump. |
-| Misty Dive | 3 | 800 | Vanish into mist and plunge down on a foe from above. Works from the air. On a big monster you land on its body. |
+| Misty Dive | 3 | 800 | Vanish into mist above a foe and plunge down on it with the Air Empale, following it as it moves. Works from the air. |
 | Eldritch Blast | 5 | 1500 | A searing beam of eldritch energy from your off hand. Works from the air. |
 | Archfey Combo | 7 | 2500 | A fey-born flurry: vanish and strike from every side in quick succession. |
 | Eldritch Smite | 8 | 3000 | A crushing two-part overhead blow that knocks even great foes to the ground. Uses a **spell slot**. |
@@ -83,6 +83,18 @@ Learned at the Vocation Guild with Discipline (DCP), equipped like any weapon sk
 
 Each skill has a second level for 100 DCP at the same rank (it's there for the game's skill menus; it doesn't change
 the skill). A hit strong enough to make you flinch or fall interrupts a chant (Caustic Brew, Guise).
+
+## EX skills
+
+Three skills get an **EX version** when your sword carries the matching **special skill** (from appraisal) and the
+skill is learned at **level 2** - the game's own EX rule. The sword's special skill then shows the EX name in the item
+screens, and the skill's name gets "EX".
+
+| EX skill | Sword special skill | What it adds |
+|---|---|---|
+| Archfey Combo EX | Cloudfall Strike | After the opening teleports: a kick and backflip, a sliding cut past the enemy, then the falling strike. |
+| Eldritch Slash EX | Plenilune Slash | A vertical cut with its wave; the swing slows down for a moment - press again for a second, horizontal cut with a flat wave and a sword twirl. No second press: back to idle. Real sword hits. |
+| Tasha's Caustic Brew EX | Tornadic Strike | Moments after the acid lands, the whole stream bursts into flame from end to end and sets foes on fire. Uses a **spell slot** (no slot free: the acid only). |
 
 ## Spell slots
 
@@ -125,6 +137,18 @@ Jump
 
 ## Changelog
 
+**1.3**
+- New: **EX skills** - Archfey Combo EX, Eldritch Slash EX and Tasha's Caustic Brew EX (see "EX skills").
+- Misty Dive: after the teleport you strike with the Fighter's Air Empale (its own hover and plunge), follow a
+  moving enemy while you fall, and the height adapts (a foe lying on the ground, or when you stand on a big monster).
+- Caustic Brew: the acid hits a big monster whenever its body is in the acid, not only its middle - big foes get
+  hit and poisoned far more reliably.
+- Fixed: a crash with big monsters - Pactblade's health-bar notification could crash the game after a big monster died
+  and the next one was hit. The grey "damage taken" segment now shows on normal enemies' health bars only (a boss's
+  bar at the top just drops).
+- Fixed: Eldritch Slash, Archfey Combo and Controlled Fall restored stamina instead of costing it.
+- The Pactblade menu remembers which of its sections were open after a script reset.
+
 **1.2**
 - All of Pactblade's own hits (Eldritch Blast, Caustic Brew, Hellish Rebuke, Misty Dive's strike) now register on the
   enemy's health bar like normal hits, with the grey "damage taken" segment.
@@ -164,7 +188,7 @@ Jump
 
 ## Settings
 
-REFramework menu (Insert) → Script Generated UI → **Pactblade 1.2**: Nox sword look on/off, arm effect on/off, the spell slot display (on/off, position, size), and
+REFramework menu (Insert) → Script Generated UI → **Pactblade 1.3**: Nox sword look on/off, arm effect on/off, the spell slot display (on/off, position, size), and
 **Dimension Door** (on/off, also for other vocations, the key, range, how long a door stays open, the door's look).
 
 ## Safe for your save and online
@@ -180,6 +204,7 @@ folder, `reframework/data/VSB/packs/pactblade`, `pak_mods/Pactblade.pak` and `re
 ## Known issues
 
 - Single player only (your character, not pawns).
+- The EX skills need the expansion's appraised special skills on your sword.
 - As Warfarer, switching weapons keeps an active Guise on.
 - Resting at an inn or camp doesn't end the Guise.
 - When the Guise ends, a faint gold shimmer of its decoy can stay where it ended (gone with the next cast).
@@ -189,7 +214,8 @@ folder, `reframework/data/VSB/packs/pactblade`, `pak_mods/Pactblade.pak` and `re
 ## Credits
 
 - **Capcom** for Dragon's Dogma 2. The effects, animations and most sounds are the game's own, used by ID or as
-  recoloured copies. No game file is replaced.
+  recoloured copies. No game file is replaced. The EX animations of Archfey Combo EX and Eldritch Slash EX are converted
+  from Capcom's Devil May Cry 5 (the kick) and Onimusha (the sliding cut, Eldritch Slash EX).
 - **praydog** for REFramework.
 - **Bloodragon** for _DragonCore and VocationAndSkillBuilder.
 - **SilverEzredes** and **alphaZomega** for _ScriptCore.

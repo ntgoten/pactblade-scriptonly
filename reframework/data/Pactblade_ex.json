@@ -1,0 +1,124 @@
+{
+    "bladeLen": 0.949999988079071,
+    "bladeR": 0.05999999865889549,
+    "bwBurnPts": 50.0,
+    "bwDelay": 1.5,
+    "bwDmg": 120.0,
+    "bwFx": 0,
+    "bwFxSize": 1.0,
+    "bwInStep": 0.10000000149011612,
+    "bwMode": "auto",
+    "bwOutStep": 0.10000000149011612,
+    "bwSecs": 3.700000047683716,
+    "bwSndBurn": 3520342338,
+    "bwSndEarly": 0.5,
+    "bwSndIgnite": 61797333,
+    "bwSndStop": 4169246058,
+    "bwTick": 0.30000001192092896,
+    "calcEnd": true,
+    "cuts": {
+        "issen_66": 52.0,
+        "kick_14": 26.0,
+        "kick_6": 46.0
+    },
+    "dmg": 4030.0,
+    "dmgSlide": 4061.0,
+    "finReact": 6000.0,
+    "finStrong": true,
+    "finType": 8,
+    "follow": true,
+    "force": false,
+    "impact": true,
+    "kickSnd": 3,
+    "legR": 0.12999999523162842,
+    "loudKick": 1,
+    "loudSlide": 2,
+    "mode": "auto",
+    "needLv2": true,
+    "react": 4500.0,
+    "reactSlide": 5896.0,
+    "rehit": 0.30000001192092896,
+    "seKick": 5,
+    "seSlide": 1,
+    "slideBack": 1.350000023841858,
+    "slideCheck": true,
+    "slideEfx": true,
+    "slideEfxPick": 3,
+    "slideEfxSecs": 3.0,
+    "slideEfxSize": 0.800000011920929,
+    "slideEfxSkip": 0.0,
+    "slideEfxUp": 0.0,
+    "slideFx": true,
+    "slideGuard": true,
+    "slideLeft": true,
+    "slideRight": 0.4000000059604645,
+    "slideYaw": 10.0,
+    "slxActFrom": 27.0,
+    "slxBackBlend": 8.0,
+    "slxBlend": 4.0,
+    "slxEnd": 150.0,
+    "slxFree": 75.0,
+    "slxFree2": 92.0,
+    "slxMode": "auto",
+    "slxRec": false,
+    "slxRecBlend": 6.0,
+    "slxRecFrom": 0.0,
+    "slxRoll1": 0.0,
+    "slxRoll2": 90.0,
+    "slxSlow": 0.15000000596046448,
+    "slxSlowFrom": 25.0,
+    "slxSlowTo": 28.0,
+    "slxStamina2": 0.0,
+    "slxWave1": 21.0,
+    "slxWave2": 61.0,
+    "slxWindow": 0.800000011920929,
+    "snds": {
+        "issen_66": [
+            [
+                7,
+                28
+            ],
+            [
+                1,
+                0
+            ]
+        ],
+        "kick_14": [
+            [
+                8,
+                2
+            ],
+            [
+                1,
+                26.0
+            ]
+        ],
+        "kick_6": [
+            [
+                4,
+                20
+            ],
+            [
+                1,
+                0
+            ]
+        ]
+    },
+    "spark": false,
+    "stamina": 350.0,
+    "t2React": 700.0,
+    "t2Right": true,
+    "t2Type": 5,
+    "t2Weaken": true,
+    "typeKick": 5,
+    "typeSlide": 5,
+    "v2": true,
+    "v3": true,
+    "whoosh": 4,
+    "zoom": true,
+    "zoomBack": 1.5,
+    "zoomEarly": true,
+    "zoomIn": 0.25,
+    "zoomOut": 0.5,
+    "zoomUp": 0.30000001192092896
+}

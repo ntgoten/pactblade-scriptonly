@@ -6,7 +6,7 @@
 --   * Blast damage = the hit's magick base x Magick Bolt's attack multiplier x the passive's magick bonus x 5 / 10.
 --   * Passive on all your other hits: magick part x1.5 (physical part unchanged).
 -- Nothing is written into the save; Reset scripts or removing the file undoes everything.
-local NAME, VERSION = "Pactblade", "1.2"
+local NAME, VERSION = "Pactblade", "1.3"
 local DATA = "Pactblade.json"
 -- (1.0) RELEASE (json.RELEASE): the short menu, and of the data files only the ones Pactblade needs are written.
 -- A test build: RELEASE = false below (the full test menu + the debug dumps). (No extra main-chunk locals: 200 max.)
@@ -16,7 +16,7 @@ do
     if RELEASE then
         local KEEP = { [DATA] = true, ["Pactblade_guise_items.json"] = true, ["Pactblade_vsb_pick.json"] = true,
                        ["Pactblade_guise_sounds.json"] = true, ["Pactblade_trace.json"] = true,
-                       ["Pactblade_slots.json"] = true }
+                       ["Pactblade_slots.json"] = true, ["Pactblade_menu.json"] = true }
         local real = json
         json = setmetatable({ RELEASE = true,
             dump_file = function(name, ...) if KEEP[name] then return real.dump_file(name, ...) end return true end },
@@ -243,6 +243,27 @@ end
 local dbg = { log = {}, hits = {}, blocked = 0, suppressed = 0, glowMethod = "A", glowJoint = "L_Arm_Lower",
               glow = "-" }
 local trace = {}
+-- (user 2026-10-30) the menu remembers its open nodes across Reset scripts (data/Pactblade_menu.json)
+dbg.ui = { open = json.load_file("Pactblade_menu.json") or {}, path = {}, seen = {}, dirty = false, saveT = 0 }
+function dbg.tree(label)
+    local ui = dbg.ui
+    if label == NAME .. " " .. VERSION then ui.path = {} end   -- (the top node: a fresh path each frame, even after a menu error)
+    local name = tostring(label):match("##(.+)$") or tostring(label):gsub("[%d%.]+", "")   -- (no version / counters in the key)
+    local key = table.concat(ui.path, "/") .. "/" .. name
+    if not ui.seen[key] then
+        ui.seen[key] = true
+        if ui.open[key] and imgui.set_next_item_open then pcall(imgui.set_next_item_open, true) end
+    end
+    local o = imgui.tree_node(label)
+    if (ui.open[key] == true) ~= (o == true) then ui.open[key] = o or nil; ui.dirty = true end
+    if o then ui.path[#ui.path + 1] = name end
+    if ui.dirty and os.clock() > ui.saveT then ui.dirty, ui.saveT = false, os.clock() + 1; pcall(json.dump_file, "Pactblade_menu.json", ui.open) end
+    return o
+end
+function dbg.tree_pop()
+    table.remove(dbg.ui.path)
+    imgui.tree_pop()
+end
 -- debug files: written at most every 2 s (each write is disk I/O on the game thread - a stutter per hit / warp)
 dbg.files, dbg.filesAt = {}, 0
 function dbg.save(name, data) dbg.files[name] = data end
@@ -311,8 +332,8 @@ re.on_pre_application_entry("LateUpdateBehavior", function()
         local a = runtime.player()
         local spent = math.max(0, (c.before or 0) - (a:stamina() or 0))
         local rest = c.cost - spent
-        if rest > 0 then a:consume_stamina(rest)
-        elseif rest < 0 then pcall(function() a.character:get_StaminaManager():add(-rest, true) end) end   -- (4.03: the game took more: back)
+        if rest > 0 then a:consume_stamina(rest + 0.0)   -- (+ 0.0: an integer arrives as NaN = a full bar)
+        elseif rest < 0 then pcall(function() a.character:get_StaminaManager():add(-rest + 0.0, true) end) end   -- (4.03: the game took more: back)
         note(("stamina: %s costs %.0f - the game took %.0f, we %s %.0f"):format(c.what, c.cost, spent, rest >= 0 and "took" or "gave back", math.abs(rest)))
     end)
 end)
@@ -348,6 +369,15 @@ end)
 ------------------------------------------------------------------------
 -- state shared with the hooks (updated every frame)
 ------------------------------------------------------------------------
+-- (crash hunt 2026-10-28) a component / object still alive? get_Valid does not throw on a destroyed one - get_GameObject
+-- on a destroyed component DOES (a managed exception inside our call breaks the game's reference bookkeeping -> a crash
+-- later, anywhere): check this before any get_GameObject on characters we did not just get from the game
+dbg.RESEARCH = false   -- (crash hunt) research hooks (sound traces, probes, hot text hooks): not installed unless true
+function dbg.valid(o)
+    if not o then return false end
+    local ok, v = pcall(o.call, o, "get_Valid")
+    return ok and v == true
+end
 local live = { on = false, go = nil, am = nil, ctx = nil, avail = nil, shieldWorn = false, sc = nil }
 dbg.live = live   -- (1.0) for callbacks defined above this line
 -- (i-0.7) Dimension Door (from the user's standalone mod 0.8.5): reframework/autorun/Pactblade/DimensionDoor.lua
@@ -643,7 +673,7 @@ re.on_frame(function()
             L:call("changeMotion(System.UInt32, System.UInt32, System.Single, System.Single, via.motion.InterpolationMode, via.motion.InterpolationCurve)",
                 145, L:get_MotionID(), 0.0, 12.0, 1, 1)
         end)
-        pcall(a.consume_stamina, a, 100)
+        pcall(a.consume_stamina, a, 100.0)   -- (a float: an integer arrives as NaN = a full bar)
         note("Controlled Fall")
     end
 end)
@@ -1790,6 +1820,10 @@ local function effect_id_of(args, how)
 end
 local comboFx = { seen = {}, list = {} }
 dbg.rec = { on = false, secs = 8, list = {}, info = "-", near = false, scs = {} }
+pcall(function()   -- (user: recorded before a reset) the recording history from its file
+    local h = json.load_file("Pactblade_rec_history.json")
+    if type(h) == "table" then dbg.rec.history = h end
+end)
 function dbg.rec_add(e)
     local r = dbg.rec
     if not r.on then return end
@@ -1826,13 +1860,15 @@ local function combo_rec(args, how)
         pcall(function()
             local go = sdk.to_managed_object(args[2]):call("get_GameObject")
             local pl = runtime.player()
-            if not pl or go:get_address() ~= pl.game_object:get_address() then return end
+            if not pl or not go then return end
+            local obj
+            if go:get_address() ~= pl.game_object:get_address() then return end
             local idd = effect_id_of(args, how)
-            local e = { effect = idd, how = how }
-            pcall(function()   -- which effect file set the container index points at
+            local e = { effect = idd, how = how, obj = obj }
+            pcall(function()   -- which effect file set the container index points at (on the object that asked)
                 local idx = tonumber(tostring(idd):match("^(%-?%d+)/"))
                 if idx and idx >= 0 then
-                    local mgr = pl.game_object:call("getComponent(System.Type)", sdk.typeof("via.effect.script.ObjectEffectManager2"))
+                    local mgr = go:call("getComponent(System.Type)", sdk.typeof("via.effect.script.ObjectEffectManager2"))
                     e.set = tostring(mgr.ExternalDataContainers[idx].DataContainer:get_Path())
                 end
             end)
@@ -2535,8 +2571,35 @@ local DUMMIES = {
     { name = "Chimera", path = "AppSystem/ch/ch254/prefab/ch254000_00.pfb", tag = "ch254000" },
     { name = "Griffin", path = "AppSystem/ch/ch253/prefab/ch253000_00.pfb", tag = "ch253000" },   -- (3.60 user)
     { name = "Gagana", path = "AppSystem/ch/ch253/prefab/ch253012_00.pfb", tag = "ch253012" },   -- (1.0.1 user: fire tests)
+    -- (user 2026-10-30: the DLC's (ice) ogre - its DLC files are ch251000_50 (double arm, dropkick, own balance settings))
+    { name = "Ogre", path = "AppSystem/ch/ch251/prefab/ch251000_00.pfb", tag = "ch251000" },
+    { name = "Corrupted Ogre (ch251000_50)", path = "AppSystem/ch/ch251/prefab/ch251000_50.pfb", tag = "ch251000" },
+    { name = "Corrupted Ogre 2 (ch251001_50)", path = "AppSystem/ch/ch251/prefab/ch251001_50.pfb", tag = "ch251001" },
+    -- (user: the DLC's "Snatching Beast" = a white-furred ogre that steals spoils and runs back to its lair - the
+    -- ogre id with its own app.Ch251002_GetawayRoute; ch261000 / ch261001 were wrong guesses: new DLC enemies)
+    { name = "Snatching Beast (ch251002)", path = "AppSystem/ch/ch251/prefab/ch251002_00.pfb", tag = "ch251002" },
 }
 local dummy = { wanted = {}, set = {}, hits = {}, count = 0, status = "-" }   -- set: chara address -> { chara, paused }
+-- (user 2026-10-28: the spawn buttons often put bandits under the ground - they fall out and the brine kills them) the
+-- summon places them at MY height in front of me; each new one is put on the ground surface under its spot (a ray down
+-- from 3 m above the higher of it / me, _SharedCore's cast_ray, terrain layer 2; the highest hit), at once and after 1 s
+local function ground_snap(ch, refY)
+    local okS, sh = pcall(require, "_SharedCore/Functions")
+    if not okS or type(sh) ~= "table" or not sh.cast_ray then return "no _SharedCore" end
+    local tr = ch:get_GameObject():get_Transform()
+    local p = tr:get_Position()
+    local top = math.max(p.y, refY or p.y) + 3
+    local best
+    for _, r in ipairs(sh.cast_ray(Vector3f.new(p.x, top, p.z), Vector3f.new(p.x, top - 15, p.z), 2, 0, 0.05, 0) or {}) do
+        local q = r[2]
+        if q and (not best or q.y > best) then best = q.y end
+    end
+    if not best then return "no ground found" end
+    if math.abs(p.y - best) < 0.3 then return ("on the ground (%.1f)"):format(best) end
+    tr:set_Position(Vector3f.new(p.x, best + 0.1, p.z))
+    pcall(function() ch["<CharaController>k__BackingField"]:call("warp") end)
+    return ("moved %.1f m onto the ground"):format(best + 0.1 - p.y)
+end
 local function dummy_spawn(d)
     local a = runtime.player()
     if not a or not a:valid() then return end
@@ -2554,13 +2617,27 @@ local function dummy_spawn(d)
         local tr = a.game_object:get_Transform()
         at = tr:get_Position() + require("DragonCore.game.mathx").rotate(Vector3f.new(0, 0, 4), tr:get_Rotation())
     end)
-    table.insert(dummy.wanted, { tag = d.tag, untilT = os.clock() + 20, before = before, at = at })
+    table.insert(dummy.wanted, { tag = d.tag, untilT = os.clock() + 20, before = before, at = at, refY = at and at.y })
     dummy.status = ok and ("spawning " .. d.name .. "...") or ("spawn failed: " .. tostring(a.errors and a.errors.summon))
 end
 function dummy.real(d)   -- (3.59) the same summon, but not paused and not a dummy: a normal enemy that fights
     local a = runtime.player()
     if not a or not a:valid() then return end
+    local before = {}
+    pcall(function()
+        local list = sdk.get_managed_singleton("app.EnemyManager")._EnemyList
+        for i = 0, list._size - 1 do
+            local e = list._items[i]
+            if e and e._Chara then before[e._Chara:get_address()] = true end
+        end
+    end)
     local ok = a:summon({ summon = d.path, count = 1, duration = 3600, hostile = true, at = "front", distance = 8 })
+    local at
+    pcall(function()
+        local tr = a.game_object:get_Transform()
+        at = tr:get_Position() + require("DragonCore.game.mathx").rotate(Vector3f.new(0, 0, 8), tr:get_Rotation())
+    end)
+    table.insert(dummy.wanted, { tag = d.tag, untilT = os.clock() + 20, before = before, at = at, refY = at and at.y, real = true })
     dummy.status = ok and ("spawned a normal " .. d.name) or ("spawn failed: " .. tostring(a.errors and a.errors.summon))
 end
 local dumped = {}
@@ -2593,7 +2670,7 @@ local function pause_ai(chara)
     return n
 end
 local function dummy_update()
-    if #dummy.wanted == 0 and dummy.count == 0 then return end
+    if #dummy.wanted == 0 and dummy.count == 0 and #(dummy.resnap or {}) == 0 then return end
     local now = os.clock()
     local mgr = sdk.get_managed_singleton("app.EnemyManager")
     local list = mgr and mgr._EnemyList
@@ -2601,31 +2678,61 @@ local function dummy_update()
     for i = 0, size - 1 do
         local e = items[i]
         local ch = e and e._Chara
+        if ch and not dbg.valid(ch) then   -- (crash hunt: a killed dummy's object is destroyed while it is still listed)
+            local addr = ch:get_address()
+            if dummy.set[addr] then dummy.set[addr] = nil; dummy.count = math.max(0, dummy.count - 1) end
+            ch = nil
+        end
         if ch then
             local addr = ch:get_address()
             local d = dummy.set[addr]
             if not d and #dummy.wanted > 0 then
                 local okP, pos = pcall(function() return ch:get_GameObject():get_Transform():get_Position() end)
                 for k, w in ipairs(dummy.wanted) do
-                    local near = okP and w.at and (pos - w.at):length() < 6
+                    -- (horizontal distance: one spawned deep under the ground is still found)
+                    local near = okP and w.at and ((pos.x - w.at.x) ^ 2 + (pos.z - w.at.z) ^ 2) < 36
                     if near and not w.before[addr] then
-                        d = { chara = ch:add_ref(), seen = now }
+                        local okG, how = pcall(ground_snap, ch, w.refY)
+                        note("spawn: " .. tostring(okG and how or ("ground check failed: " .. tostring(how))))
+                        table.remove(dummy.wanted, k)
+                        if w.real then   -- (a normal enemy: only put on the ground, again after 1 s)
+                            dummy.resnap = dummy.resnap or {}
+                            dummy.resnap[#dummy.resnap + 1] = { chara = ch:add_ref(), at = now + 1.0, refY = w.refY }
+                            break
+                        end
+                        d = { chara = ch:add_ref(), seen = now, snapAt = now + 1.0, refY = w.refY }
                         pcall(function() dummy.hits[ch["<Hit>k__BackingField"]:get_address()] = true end)
                         dummy.set[addr] = d
                         dummy.count = dummy.count + 1
-                        table.remove(dummy.wanted, k)
                         break
                     end
                 end
             end
             -- pause its AI a moment after it appears (once its parts are set up), and keep it paused
-            if d and now - d.seen > 3.0 then
+            if d and d.snapAt and now > d.snapAt then
+                d.snapAt = nil
+                local okG, how = pcall(ground_snap, ch, d.refY)
+                if okG and how and how:find("moved") then note("spawn (after 1 s): " .. how) end
+            end
+            if d and now - d.seen > 3.0 and (not d.paused or now > (d.nextPause or 0)) then
+                d.nextPause = now + 1.0
                 local okP, n = pcall(pause_ai, ch)
                 if okP and not d.paused then d.paused = n; dummy.status = ("dummy ready (%d AI part(s) paused)"):format(n) end
             end
         end
     end
     for k = #dummy.wanted, 1, -1 do if now > dummy.wanted[k].untilT then table.remove(dummy.wanted, k) end end
+    for k = #(dummy.resnap or {}), 1, -1 do
+        local r = dummy.resnap[k]
+        if now > r.at then
+            table.remove(dummy.resnap, k)
+            local okV, valid = pcall(function() return r.chara:get_GameObject():get_Valid() end)
+            if okV and valid then
+                local okG, how = pcall(ground_snap, r.chara, r.refY)
+                if okG and how and how:find("moved") then note("spawn (after 1 s): " .. how) end
+            end
+        end
+    end
 end
 re.on_pre_application_entry("UpdateBehavior", function() pcall(dummy_update) end)
 local function is_dummy_hit(info)
@@ -3540,9 +3647,147 @@ pcall(function()
             return sdk.to_ptr(FLINCH)
         end)
 end)
+-- (2026-10-30, crash fix research) who listens to an enemy's "damage calculated" event (HitController.DamageCalcEndHandler)?
+-- Read only: the safe HP-bar notification will call ONLY the HP gauge's listener (the whole event crashed big monsters)
+;(function()
+    local P = { want = false, info = "-" }
+    dbg.calcEndProbe = P
+    local function val(v)
+        if v == nil then return "nil" end
+        if type(v) == "userdata" then
+            local ok, s = pcall(function()
+                if sdk.is_managed_object(v) then return v:get_type_definition():get_full_name() .. " @" .. ("%x"):format(v:get_address()) end
+                return tostring(v)
+            end)
+            return ok and s or "?"
+        end
+        if type(v) == "number" then return ("%s (0x%x)"):format(tostring(v), math.tointeger(v) or 0) end
+        return tostring(v)
+    end
+    re.on_pre_application_entry("UpdateBehavior", function()
+        if not P.want then return end
+        P.want = false
+        local out, firstFields = {}, nil
+        local ok, err = pcall(function()
+            local me = runtime.player().character:get_GameObject():get_Transform():get_Position()
+            local list = sdk.get_managed_singleton("app.EnemyManager")._EnemyList
+            for i = 0, list._size - 1 do
+                pcall(function()
+                    local ch = list._items[i] and list._items[i]._Chara
+                    if not dbg.valid(ch) then return end
+                    local q = ch:get_GameObject():get_Transform():get_Position()
+                    local d = math.sqrt((q.x - me.x) ^ 2 + (q.y - me.y) ^ 2 + (q.z - me.z) ^ 2)
+                    if d > 40 then return end
+                    local e = { name = tostring(ch:get_GameObject():get_Name()), dist = ("%.1f"):format(d), listeners = {} }
+                    local h = ch["<Hit>k__BackingField"]:get_field("DamageCalcEndHandler")
+                    if h then
+                        local arr = h:call("GetInvocationList")
+                        for k = 0, arr:get_size() - 1 do
+                            pcall(function()
+                                local dl = arr[k]
+                                local entry = {}
+                                pcall(function() local t = dl:call("get_Target"); entry.target = t and t:get_type_definition():get_full_name() or "nil (static)" end)
+                                pcall(function() local m = dl:call("get_Method"); entry.method = val(m); pcall(function() entry.methodName = tostring(m:call("get_Name")) end) end)
+                                if not firstFields then   -- (once: every field of a delegate, to see where its method is)
+                                    firstFields = { type = dl:get_type_definition():get_full_name() }
+                                    local td = dl:get_type_definition()
+                                    while td do
+                                        for _, f in ipairs(td:get_fields()) do
+                                            if not f:is_static() then pcall(function() firstFields[f:get_name()] = val(dl:get_field(f:get_name())) end) end
+                                        end
+                                        td = td:get_parent_type()
+                                    end
+                                end
+                                e.listeners[#e.listeners + 1] = entry
+                            end)
+                        end
+                    else e.listeners = "no handler" end
+                    out[#out + 1] = e
+                end)
+            end
+        end)
+        json.dump_file("Pactblade_calcend_listeners.json", { enemies = out, delegateFields = firstFields })
+        P.info = ok and ("%d enemies listed -> data/Pactblade_calcend_listeners.json"):format(#out) or ("failed: " .. tostring(err))
+        note("HP-bar probe: " .. P.info)
+    end)
+    function P.menu()
+        if imgui.button("list the HP-bar event's listeners of enemies near me (research, read only)##cep") then P.want = true end
+        imgui.same_line()
+        imgui.text(P.info)
+    end
+end)()
+-- (2026-10-30, Misty Strike EX research) the Thief's stealth buff on me + is a skill's button still held?
+;(function()
+    local T = { want = nil, info = "-", held = "-", active = "-", stam = "-" }
+    dbg.stealth = T
+    dbg.inp = { act = {} }   -- the skill buttons' input actions, by (translated) skill id; the input processor
+    pcall(function()
+        local SIG2 = "processCustomSkill(app.CharacterInput.Action, app.HumanCustomSkillID, System.UInt64, app.LockOnController.Option, System.Boolean, System.Boolean, System.Boolean)"
+        sdk.hook(sdk.find_type_definition("app.PlayerInputProcessorDetail"):get_method(SIG2), function(args)
+            pcall(function()
+                local id = sdk.to_int64(args[4]) & 0xFFFFFFFF   -- (VSB's adapter ran first: the Fighter id)
+                dbg.inp.act[id] = sdk.to_int64(args[3])
+                if not dbg.inp.detail or dbg.inp.detailAddr ~= sdk.to_int64(args[2]) then
+                    dbg.inp.detail, dbg.inp.detailAddr = sdk.to_managed_object(args[2]):add_ref(), sdk.to_int64(args[2])
+                end
+            end)
+        end, function(r) return r end)
+    end)
+    function dbg.skill_held(skillName)   -- true / false; nil = unknown (that skill not pressed yet this session)
+        local id
+        pcall(function() id = sdk.find_type_definition("app.HumanCustomSkillID"):get_field(skillName):get_data(nil) & 0xFFFFFFFF end)
+        local act = id and dbg.inp.act[id]
+        if not act or not dbg.inp.detail then return nil end
+        local ok, v = pcall(dbg.inp.detail.call, dbg.inp.detail, "isOn(System.UInt64)", act)
+        if ok then return v == true end
+    end
+    local function sbm()
+        return runtime.player().human:get_field("SpecialBuffManager")
+    end
+    local startM
+    re.on_pre_application_entry("UpdateBehavior", function()
+        local a = runtime.player()
+        if not a or not a:valid() then return end
+        if T.want then
+            local w = T.want
+            T.want = nil
+            local ok, err = pcall(function()
+                local m = sbm()
+                if w == "clear" then m:call("clearBuff_Job04Stealth"); T.info = "cleared"; return end
+                if not startM then
+                    for _, mm in ipairs(sdk.find_type_definition("app.HumanSpecialBuffManager"):get_methods()) do
+                        if mm:get_name() == "startBuff_Job04Stealth" then startM = mm end
+                    end
+                end
+                startM:call(m, w, nil)
+                T.info = ("stealth Lv%d started"):format(w)
+            end)
+            if not ok then T.info = "failed: " .. tostring(err) end
+            note("stealth test: " .. T.info)
+        end
+        if os.clock() < (T.nextT or 0) then return end
+        T.nextT = os.clock() + 0.1
+        pcall(function() T.active = tostring(sbm():call("get_IsActiveJob04Stealth")) end)
+        pcall(function() T.stam = ("%.0f"):format(a:stamina() or -1) end)
+        local h = dbg.skill_held(cfg.blinkSkill or "Job01_CymbalAttack")
+        T.held = h == nil and "unknown (press Misty Strike once first)" or (h and "YES" or "no")
+    end)
+    function T.menu()
+        imgui.text("Misty Strike EX test (research): the Thief's stealth on me, and the held button")
+        if imgui.button("stealth Lv0##st") then T.want = 0 end
+        imgui.same_line()
+        if imgui.button("stealth Lv1##st") then T.want = 1 end
+        imgui.same_line()
+        if imgui.button("stealth Lv2##st") then T.want = 2 end
+        imgui.same_line()
+        if imgui.button("clear##st") then T.want = "clear" end
+        imgui.text(("   %s  |  stealth active: %s  |  stamina %s"):format(T.info, T.active, T.stam))
+        imgui.text("   Misty Strike button held: " .. T.held)
+    end
+end)()
 -- (2026-10-27, Misty Dive research) the dive recorder - see dbg.diveRec; saved to data/Pactblade_dive_trace.json
 ;(function()
-    local R = { on = false, list = nil, untilT = 0, n = 0, info = "off (research done - its per-frame joint scan costs FPS)" }
+    local R = { on = false, joints = false, list = nil, untilT = 0, n = 0, info = "off (research done - its per-frame joint scan costs FPS)" }
     dbg.diveRec = R
     local function v3(v) local ok, s = pcall(function() return ("%.2f %.2f %.2f"):format(v.x, v.y, v.z) end); return ok and s or "?" end
     local function ev(s) if R.list then R.list[#R.list + 1] = ("%.3f  %s"):format(os.clock() - R.t0, s) end end
@@ -3602,6 +3847,11 @@ end)
             local ground = "?"
             pcall(function() ground = tostring(a.character:call("get_IsGround")) end)
             local line = ("me %s ground %s act %s | md %s"):format(v3(tr:get_Position()), ground, tostring(a:current_action(0)), tostring(md and md.stage))
+            pcall(function()   -- (what the full-body layer really plays)
+                local L = a.character:get_Motion():getLayer(0)
+                line = line .. (" | mot %d/%d f%.1f | diveAnim %s diveOn %s"):format(L:call("get_MotionBankID"), L:call("get_MotionID"),
+                    L:call("get_Frame") or -1, tostring(md and md.diveAnim), tostring(md and md.diveOn))
+            end)
             pcall(function()
                 local F = md and md.follow
                 if F then line = line .. (" | follow lastY %.2f low %.2f"):format(F.lastY or -1, F.low or -1) end
@@ -3613,13 +3863,13 @@ end)
                 if not okV or not valid then return end
                 local ttr = t:get_GameObject():get_Transform()
                 local hi, hn = -1e9, "?"
-                pcall(function()
+                if R.joints then pcall(function()
                     local j = ttr:call("get_Joints")
                     for i = 0, j:get_size() - 1 do
                         local jt = j[i]; local y = jt:get_Position().y
                         if y > hi then hi, hn = y, tostring(jt:get_Name()) end
                     end
-                end)
+                end) end
                 line = line .. (" | target %s top %.2f (%s)"):format(v3(ttr:get_Position()), hi, hn)
             end)
             if cur then pcall(function()
@@ -3683,7 +3933,7 @@ end)()
 -- app.HitSETriggerSystem.requestTrigger(WwiseContainerApp, trigger id, position): logged here (container's owner, my
 -- action), the user picks one per move in the EX menu, combo.play_se plays it the same way at our contact point
 pcall(function()
-    if json.RELEASE then return end   -- (1.2: EX only - off in a release, it ran on every hit sound in the game)
+    if json.RELEASE or not dbg.RESEARCH then return end   -- (1.2: research only - it ran on every hit sound in the game)
     sdk.hook(sdk.find_type_definition("app.HitSETriggerSystem"):get_method("requestTrigger(app.WwiseContainerApp, System.UInt32, via.vec3)"),
         function(args)
             local ex = combo.ex
@@ -3714,7 +3964,7 @@ pcall(function()
 end)
 -- (EX: the preview is silent) trace of the damage-sound component's steps (tick in the EX menu)
 pcall(function()
-    if json.RELEASE then return end   -- (1.2: EX research only - off in a release)
+    if json.RELEASE or not dbg.RESEARCH then return end   -- (research only)
     local function add(line)
         local ex = combo.ex
         if not ex or not ex.seTraceOn then return end
@@ -3851,14 +4101,57 @@ pcall(function()
                 local info = sdk.to_managed_object(args[3])
                 local owner = info["<AttackOwnerObject>k__BackingField"]
                 if owner and owner:get_address() == live.go then s3.pbReact = info end
+                -- (user: A2) the final strike on a BIG monster: our type + power go in BEFORE the game's calculation
+                local ex = combo.ex
+                if s3.pbReact and ex and combo.parts == ex.PARTS and combo.is_final() and ex.finStrong then
+                    local go = info["<DamageGameObject>k__BackingField"]
+                    if go and (ex.finBig or "light") == "game" and combo.is_boss(go) then   -- (user: big = its own HP bar at the top; A2)
+                        local tv = ex.finType < 0 and 0xFFFFFFFF or ex.finType
+                        pcall(function() info.DamageType, info.DamageActType = tv, tv end)
+                        pcall(function() info.DamageReaction = (ex.finReact or 6000) + 0.0 end)
+                        s3.pbA2 = true
+                    end
+                end
             end)
         end, function(r)
             local s3 = thread.get_hook_storage()
             local info = s3.pbReact
             s3.pbReact = nil
             if not info then return r end
+            if combo.reactWatchOn then pcall(function()   -- (research, off: the knockdown cause found 2026-10-30) what the target does after this hit
+                local go = info["<DamageGameObject>k__BackingField"]
+                if not go then return end
+                combo.reactWatch = combo.reactWatch or {}
+                local now = os.clock()
+                local what = ("part %d%s"):format(combo.stage, combo.is_final() and " (final strike)" or "")
+                for _, dt in ipairs({ 0.4, 1.0 }) do
+                    combo.reactWatch[#combo.reactWatch + 1] = { addr = go:get_address(), at = now + dt, what = what, dt = dt, name = tostring(go:get_Name()) }   -- (no reference kept)
+                end
+            end) end
             local ex = combo.ex
-            if ex and combo.parts == ex.PARTS and combo.is_final() and ex.finStrong then   -- (user: the last hit a stronger hitback)
+            local bigT, radT = false, -1   -- (user: no forced knockdown on big monsters - option A)
+            pcall(function()
+                local go = info["<DamageGameObject>k__BackingField"]
+                local ch = go and go:call("getComponent(System.Type)", sdk.typeof("app.Character"))
+                local rr = ch and ch["<CharaController>k__BackingField"]:call("get_Radius")
+                if type(rr) == "number" then radT = rr end
+                bigT = go and combo.is_boss(go) or false   -- (user: big = its own HP bar at the top, not the radius)
+            end)
+            if ex and combo.parts == ex.PARTS and combo.is_final() and ex.finStrong and bigT and (ex.finBig or "light") == "light" then
+                -- (user: B) a light flinch every time on a boss-bar enemy: forced type + power, no armour piercing
+                local tv = (ex.finTypeBig or 6) < 0 and 0xFFFFFFFF or (ex.finTypeBig or 6)
+                pcall(function() info.DamageType, info.DamageActType, info.OverwriteBlownType = tv, tv, tv end)
+                pcall(function() info.DamageReaction = (ex.finReactBig or 3000) + 0.0 end)
+                note(("EX: the final strike on a boss-bar enemy (radius %.2f m) - a light flinch: reaction %d, power %.0f"):format(radT, tv, ex.finReactBig or 3000))
+                return sdk.to_ptr(tv)
+            end
+            if ex and combo.parts == ex.PARTS and combo.is_final() and ex.finStrong then
+                local got = sdk.to_int64(r) & 0xFFFFFFFF
+                note(("EX: the final strike - radius %.2f m, %s: %s"):format(radT, bigT and "boss HP bar" or "overhead HP bar", bigT and
+                    ("big monster: our power %.0f went in, the GAME decided reaction %d (%s)"):format(ex.finReact or 6000, got, got == 0xFFFFFFFF and "none" or "a reaction")
+                    or "small, forced"))
+            end
+            if ex and combo.parts == ex.PARTS and combo.is_final() and ex.finStrong and not bigT then   -- (user: the last hit a stronger hitback)
                 local was = sdk.to_int64(r) & 0xFFFFFFFF
                 local tv = ex.finType < 0 and 0xFFFFFFFF or ex.finType
                 pcall(function() info.DamageType, info.DamageActType, info.OverwriteBlownType = tv, tv, tv end)
@@ -3920,7 +4213,8 @@ combo.parts = COMBO
 combo.ex = { mode = "auto", info = "-", hits = 0, lastHitInfo = "-",
     banks = { kick = { bank = 9311, path = "animation/ch/ch00/motlist/pb_dante_kick.motlist" },
               issen = { bank = 9343, path = "animation/ch/ch00/motlist/pb_oni_issen.motlist" },
-              ryote = { bank = 9341, path = "animation/ch/ch00/motlist/pb_oni_ryoteattack.motlist" } },
+              ryote = { bank = 9341, path = "animation/ch/ch00/motlist/pb_oni_ryoteattack.motlist" },
+              slashex = { bank = 9345, path = "animation/ch/ch00/motlist/pb_slash_ex.motlist" } },   -- (Slash EX, pak x0035)
     spark = false,   -- (user: the purple hit effect at the kick / slide - off; the sounds stay)
     -- (user: Kite Arrow's hit sound on the kick, Onslaught's on the slide) picked from the hit-sound log:
     -- { id, owner = "me" / "weapon" / "enemy" } - played with the game's own HitSETriggerSystem at the contact
@@ -3930,7 +4224,22 @@ combo.ex = { mode = "auto", info = "-", hits = 0, lastHitInfo = "-",
     follow = true, typeKick = 7, typeSlide = 5, force = false, impact = true,   -- (force off: suspect for "no damage")   -- (user: kick Hitback_L like T2, slide only a light flinch)
     whoosh = 2, WHOOSHES = { {}, { 732561637 }, { 3752127318 }, { 732561637, 3752127318 } },   -- (user: the EX warps sound like a pop: the original
     -- parts have their attack's whoosh right after the warp - RushAttack 732561637, RushAttackFinish 3752127318, recorded)
-    slideCheck = true, slideGuard = true,
+    slideCheck = true, slideGuard = true, slideFx = true,
+    slideEfx = true, slideEfxPick = 3, slideEfxSize = 0.8,   -- (user 2026-10-28: Misty Dive takeoff layers, 0.80)
+    slideEfxSkip = 0, slideEfxSecs = 3, slideEfxUp = 0,
+    -- (user 2026-10-30) Eldritch Slash EX: Onimusha Skill_121 with real sword hitboxes; slow window, 2nd press = 2nd slash
+    slxMode = "on", slxWave1 = 21, slxWave2 = 61, slxSlowFrom = 25, slxSlowTo = 28, slxSlow = 0.15, slxEnd = 150,
+    slxRoll1 = 0, slxRoll2 = 90, slxBlend = 4, slxStamina2 = 0,
+    slxRec = true, slxRecFrom = 0, slxRecBlend = 6, slxFree = 75,
+    slxWindow = 0.8, slxBackBlend = 8,
+    slxActFrom = 27, slxFree2 = 92,
+    -- (user 2026-10-30) Caustic Brew EX: the acid's strip ignites bwDelay s after its last splash (normal fire, burn meter)
+    bwSndIgnite = 61797333, bwSndBurn = 3520342338, bwSndStop = 4169246058,   -- (the fire's sounds, picked by ear)
+    bwOutStep = 0.1,   -- (user: the fire goes out patch by patch, start to end)
+    bwMode = "on", bwDelay = 1.5,   -- (user: 0.5 -> 1 s after the last splash)
+    bwSecs = 3.7, bwTick = 0.3, bwDmg = 120, bwBurnPts = 50, bwFx = 0, bwFxSize = 1.0,   -- (user: the fire 0.7 s longer)
+    bwInStep = 0.1,   -- (user: the fire spreads patch by patch from the start too)
+    bwSndEarly = 0.5,   -- (user: the burning sound ends this much before the last patch goes out; 0.3 -> 0.5)
     -- (user: still a sound missing) the originals play sounds DURING the attack (recorded 2026-10-27): per EX motion up to
     -- 2 of these at a frame (mm.snd = { { i, f }, ... }, i = index here, 1 = none)
     SND_LIST = { { 0, "none" }, { 732561637, "RushAttack start" }, { 1214110176, "RushAttack +0.15 s" }, { 2129359301, "RushAttack +0.18 s" },
@@ -3939,13 +4248,18 @@ combo.ex = { mode = "auto", info = "-", hits = 0, lastHitInfo = "-",
         { 1781269347, "warp (Quik Fot)" }, { 2726238371, "Kite Arrow hit 2" } },
     zoom = true, zoomEarly = true, zoomBack = 1.5,   -- (zoomEarly: from Kite Arrow's 2nd kick, user)
     zoomUp = 0.3, zoomIn = 0.25, zoomOut = 0.5,   -- (user: camera out a bit for the kick + backflip)
-    slideBack = 1.45, slideLeft = true, reactSlide = 700, t2Weaken = true, t2Type = 5, t2React = 700,
+    slideBack = 1.45, slideLeft = true, slideYaw = 10,   -- (user: 10 deg)
+    reactSlide = 700, t2Weaken = true, t2Type = 5, t2React = 700,
+    bigRadius = 1.0,
+    finBig = "light", finTypeBig = 6, finReactBig = 3000,   -- (user: B = Eldritch Blast's flinch, Hitback_M forced; power 300 -> 3000, "feels right")   -- (user: big monsters (this radius and up) get the final strike's own reaction, not the forced one)
     finStrong = true, finType = 8, finReact = 6000,   -- (user: the last hit a stronger hitback; game: None 324 / Hitback_LL 3244)
     -- (above: the user's tuned slide values 2026-10-27; T2 weaker in the EX combo - the kick does the big one)
     impactEfx = { { 13, 0, 10 }, { 13, 5, 10 } }, impactSnd = { 2333241765, 3346954226 },   -- Skydragon's Fangtooth dive impact (Blink Behind recording)
     -- (user: the kick sounds like Kite Arrow's hit) recorded 2026-10-27 on the enemy: hit 1 1251200690, hit 2 (stagger) 2726238371
     kickSnd = 1, KICK_SNDS = { { 2726238371 }, { 1251200690 }, { 1251200690, 2726238371 }, { 2333241765, 3346954226 } },
-    dmg = 4800, dmgSlide = 2600, react = 4500,   -- (kick ~ T2 4788, slide ~ T1 2646 - measured) legR = 0.13, bladeR = 0.06, bladeLen = 0.95, rehit = 0.3, slideRight = 0.5, blend = 5.0,
+    dmg = 4800, dmgSlide = 2600, react = 4500,   -- (kick ~ T2 4788, slide ~ T1 2646 - measured)
+    legR = 0.13, bladeR = 0.06, bladeLen = 0.95, rehit = 0.3, slideRight = 0.5,
+    -- (blend: deliberately unset - nil = no blend into the EX parts, the feel tested since 1.2; was "blend = 5.0" in a comment)
     stamina = 350, CHANGE = "changeMotion(System.UInt32, System.UInt32, System.Single, System.Single, via.motion.InterpolationMode, via.motion.InterpolationCurve)" }
 combo.ex.PARTS = { COMBO[1], COMBO[2], COMBO[3],
     { name = "kick + backflip", spot = "start", zoom = true,
@@ -3956,12 +4270,35 @@ combo.ex.PARTS = { COMBO[1], COMBO[2], COMBO[3],
     { action = "Job01_EndRisingLunge", from = 0.0, warp = "head", spot = "start", final = true },
 }
 dbg.comboEx = combo.ex
+-- (crash hunt, see tools/patch_refcount.py) does set_field count the reference it writes? (REManagedObject count at +8)
+function combo.ex.ref_check()
+    if combo.ex.refAdds ~= nil then return combo.ex.refAdds end
+    local ok, adds = pcall(function()
+        local go = runtime.player().character:get_GameObject()
+        local sc = sdk.create_instance("app.HitController.DamageInfo"):add_ref()
+        local r0 = go:read_dword(8)
+        sc:set_field("<AttackOwnerObject>k__BackingField", go)
+        local r1 = go:read_dword(8)
+        sc:set_field("<AttackOwnerObject>k__BackingField", nil)
+        local r2 = go:read_dword(8)
+        note(("crash hunt: a reference written by set_field: count %d -> %d -> %d (cleared) - %s"):format(r0, r1, r2,
+            r1 > r0 and "counted (no fix needed)" or "NOT counted: our writes now add their own reference"))
+        return r1 > r0
+    end)
+    if not ok then note("crash hunt: reference check failed (" .. tostring(adds) .. ") - our writes add their own reference"); adds = false end
+    combo.ex.refAdds = adds
+    return adds
+end
+function combo.ex.setref(obj, name, v)   -- set_field, the value's reference counted when set_field doesn't
+    if v ~= nil and type(v) == "userdata" and sdk.is_managed_object(v) and not combo.ex.ref_check() then pcall(v.add_ref, v) end
+    obj:set_field(name, v)
+end
 function combo.ex.clone_info(info)   -- every instance field copied into a fresh DamageInfo
     local c = sdk.create_instance("app.HitController.DamageInfo"):add_ref()
     local td = sdk.find_type_definition("app.HitController.DamageInfo")
     while td and td:get_full_name() ~= "System.Object" do
         for _, f in ipairs(td:get_fields()) do
-            if not f:is_static() then pcall(function() c:set_field(f:get_name(), info:get_field(f:get_name())) end) end
+            if not f:is_static() then pcall(function() combo.ex.setref(c, f:get_name(), info:get_field(f:get_name())) end) end
         end
         td = td:get_parent_type()
     end
@@ -3975,7 +4312,7 @@ end
 function combo.ex.fill_contact2(c, a, tgo, tHit, pos, seType)
     local me = a.character:get_GameObject()
     local myHit = a.character["<Hit>k__BackingField"]
-    local function setf(n, v) pcall(function() c:set_field(n, v) end) end
+    local function setf(n, v) pcall(function() combo.ex.setref(c, n, v) end) end
     setf("<AttackOwnerObject>k__BackingField", me); setf("<AttackGameObject>k__BackingField", me)
     setf("<DamageGameObject>k__BackingField", tgo)
     setf("<AttackHitController>k__BackingField", myHit); setf("<AttackOwnerHitController>k__BackingField", myHit)
@@ -4003,19 +4340,93 @@ end
 -- (user: all our attacks need the HP bar update; breakables) after a directDamage: the real hit's notification with a copy
 -- (the damage's own info untouched - applied a frame later) - the target's DamageCalcEndHandler (HP gauge; a gimmick's
 -- callbackCalcDamageEnd = its break check)
-combo.notifyOn = true    -- (2026-10-27 user-tested: ON is fine - the RAYCAST (hit_world) made the enemy fall through the ground + the crash)
+combo.notifyOn = true   -- (2026-10-30: the HP GAUGE only - see combo.notify_gauge; the whole event crashed big monsters)
+-- every DamageInfo we hand the game: kept alive 120 s (the script never frees one the game may still hold)
+combo.keepInfos = {}
+function combo.keep_info(c)
+    local now = os.clock()
+    combo.keepInfos[#combo.keepInfos + 1] = { c = c, t = now }
+    while #combo.keepInfos > 0 and now - combo.keepInfos[1].t > 120 do table.remove(combo.keepInfos, 1) end
+end
+combo.reactWatchOn = false   -- (research tool: true = note each combo hit's effect on the target)
+-- (1.2.72 research) the reaction watcher's notes: the target's own action 0.4 s / 1.0 s after a combo hit
+re.on_pre_application_entry("UpdateBehavior", function()
+    local W = combo.reactWatch
+    if not W or #W == 0 then return end
+    local now = os.clock()
+    for i = #W, 1, -1 do
+        local w = W[i]
+        if now >= w.at then
+            table.remove(W, i)
+            pcall(function()   -- (found again in the enemy list by its address: no reference was kept)
+                local ch
+                local list = sdk.get_managed_singleton("app.EnemyManager")._EnemyList
+                for k = 0, list._size - 1 do
+                    local c = list._items[k] and list._items[k]._Chara
+                    if c and dbg.valid(c) and c:get_GameObject():get_address() == w.addr then ch = c; break end
+                end
+                if not ch then return end
+                local act = "?"
+                pcall(function() act = tostring(ch:get_ActionManager().CurrentActionList[0].Name) end)
+                note(("EX reaction watch: %s -> %s is in %s after %.1f s"):format(w.what, w.name, act, w.dt))
+            end)
+        end
+    end
+end)
+-- (user 2026-10-30) a "big" enemy = one with its own HP bar at the top of the screen: a app.ui0205xx (boss gauge)
+-- listener on its damage event. Read once per enemy (hit controller + name), nothing invoked.
+combo.bossCache = {}
+function combo.is_boss(go)
+    local ok, yes = pcall(function()
+        local ch = go:call("getComponent(System.Type)", sdk.typeof("app.Character"))
+        local hit = ch["<Hit>k__BackingField"]
+        local key, nm = hit:get_address(), tostring(go:get_Name())
+        local c = combo.bossCache[key]
+        if c and c.name == nm then return c.boss end
+        local boss = false
+        local h = hit:get_field("DamageCalcEndHandler")
+        local arr = h and h:call("GetInvocationList")
+        for k = 0, (arr and arr:get_size() or 0) - 1 do
+            local t = arr[k]:call("get_Target")
+            if t and t:get_type_definition():get_full_name():find("^app%.ui0205") then boss = true end
+        end
+        combo.bossCache[key] = { name = nm, boss = boss }
+        return boss
+    end)
+    return ok and yes == true
+end
+-- the HP gauge's listeners only (app.ui0206xx small enemies; app.ui0205xx big monsters only with combo.notifyBig - the
+-- big gauge crashed with our DamageInfo, 1.2.67), each delegate alone; big = a fresh minimal DamageInfo
+combo.notifyBig = false   -- (user 2026-10-30: not needed - bosses have their own bar at the top; never switched on)
+function combo.notify_gauge(tHit, c)   -- c = the ORIGINAL DamageInfo of the hit (never a copy: 1.2.70)
+    combo.gaugeKind = combo.gaugeKind or {}   -- (a big monster: looked at once, then never again)
+    local key, nm = tHit:get_address(), "?"
+    pcall(function() nm = tostring(tHit:get_GameObject():get_Name()) end)
+    local known = combo.gaugeKind[key]
+    if known and known.name == nm and not known.small then return 0 end
+    local h = tHit:get_field("DamageCalcEndHandler")
+    if not h then return 0 end
+    combo.keep_info(c)
+    local arr = h:call("GetInvocationList")
+    local n = 0
+    for k = 0, (arr and arr:get_size() or 0) - 1 do
+        local dl = arr[k]
+        local okT, tn = pcall(function() local t = dl:call("get_Target"); return t and t:get_type_definition():get_full_name() or "" end)
+        if okT and tn:find("^app%.ui0206") then   -- (the small overhead bar only; bosses' top bar never)
+            dl:call("Invoke(app.HitController.DamageInfo)", c)
+            n = n + 1
+            if not combo.gaugeNoted then combo.gaugeNoted = true; note("HP bar: only the gauge notified (" .. tn .. ")") end
+        end
+    end
+    combo.gaugeKind[key] = { name = nm, small = n > 0 }
+    return n
+end
 function combo.notify_hit(tgo, tHit, info, pos)
     if not combo.notifyOn then return false end
     if not (tgo and tHit and info) then return false end
     local okV, valid = pcall(tgo.get_Valid, tgo)
     if not okV or not valid then return false end
-    local a = runtime.player()
-    local c = combo.ex.clone_info(info)
-    combo.ex.fill_contact2(c, a, tgo, tHit, pos, nil)
-    local h = tHit:get_field("DamageCalcEndHandler")
-    if not h then return false end
-    h:call("Invoke(app.HitController.DamageInfo)", c)
-    return true
+    return combo.notify_gauge(tHit, info) > 0   -- (1.2.70: the hit's own DamageInfo - no copy, no hand-written references)
 end
 -- what a real hit does after its damage: the target's DamageCalcEndHandler (HP gauge grey segment, hit sound ...);
 -- then, if no hit sound was requested for the target, our own (switches through its WwiseDamageController + triggers)
@@ -4038,9 +4449,7 @@ function combo.ex.after_hit(a, t, info, seType, dmg, pos, loud)
                 ex.listeners = table.concat(names, ", ")
                 note("EX research: DamageCalcEndHandler listeners: " .. ex.listeners)
             end) end
-            local c = ex.clone_info(info)
-            ex.fill_contact(c, a, t, pos, seType)
-            h:call("Invoke(app.HitController.DamageInfo)", c)
+            if combo.notify_gauge(th, info) == 0 then error("no HP gauge notified (a big monster: skipped)") end   -- (1.2.70: the hit's own DamageInfo, the small gauge only)
         end)
         out[#out + 1] = okH and "HP bar notified" or ("HP bar: " .. tostring(errH))
     end
@@ -4073,7 +4482,7 @@ function combo.ex.sound_hit(wdc, tgo, me, seType, dmg, pos)
     si.Damage = dmg or 1
     pcall(function() si.HitSeType = seType end)
     pcall(function() si.IsDirectDamage = false end)
-    pcall(function() si["<AttackOwnerObject>k__BackingField"] = me end)
+    pcall(function() combo.ex.setref(si, "<AttackOwnerObject>k__BackingField", me) end)
     local rs = ex.realSnd and ex.realSnd[tgo:get_address()]
     if rs then for k, v in pairs(rs) do pcall(function() si[k] = v end) end end
     ex.seCopied = rs and "material from a real hit on it" or "no real hit on it yet (default material)"
@@ -4090,8 +4499,11 @@ re.on_pre_application_entry("UpdateBehavior", function()
     combo.ex.nextPre = os.clock() + 2
     if combo.mPart or combo.stage ~= 0 then return end
     local a = runtime.player()
-    if not a or not a:valid() or not combo.ex.active() then return end
+    if not a or not a:valid() then return end
+    pcall(combo.ex.ref_check)   -- (crash hunt: measured once, before any hit)
+    if not combo.ex.active() then return end
     for _, k in ipairs({ "kick", "issen" }) do pcall(combo.ex.bank, a, k) end
+    if combo.slx and combo.slx.active() then pcall(combo.ex.bank, a, "slashex"); pcall(combo.ex.bank, a, "issen") end
 end)
 re.on_pre_application_entry("UpdateBehavior", function()   -- (EX: the HP check 0.3 s after a contact hit)
     local ex = combo.ex
@@ -4118,6 +4530,7 @@ re.on_pre_application_entry("UpdateBehavior", function()   -- (hit sound type pr
         for i = 0, list._size - 1 do
             pcall(function()
                 local ch = list._items[i]._Chara
+                if not dbg.valid(ch) then return end   -- (crash hunt: never into a destroyed enemy)
                 local q = ch:get_GameObject():get_Transform():get_Position()
                 local d = (q.x - p.x) ^ 2 + (q.z - p.z) ^ 2
                 if d < 400 and (not bestD or d < bestD) then best, bestD = ch, d end
@@ -4154,9 +4567,11 @@ re.on_pre_application_entry("UpdateBehavior", function()
         or "NOT in my sound containers right now (it belongs to another object / isn't loaded)")
 end)
 -- (user: settings lost on a script reset) the EX settings saved in data/Pactblade_ex.json (loaded here, saved on change)
-combo.ex.SAVE = { "mode", "zoomEarly", "finStrong", "finType", "finReact", "loudKick", "loudSlide", "calcEnd", "dmgSlide", "seKick", "seSlide", "spark", "whoosh", "slideCheck", "follow", "typeKick", "typeSlide", "force", "impact", "kickSnd", "zoom", "zoomBack", "zoomUp", "zoomIn",
+combo.ex.SAVE = { "mode", "zoomEarly", "finStrong", "finType", "finReact", "finBig", "finTypeBig", "finReactBig", "loudKick", "loudSlide", "calcEnd", "dmgSlide", "seKick", "seSlide", "spark", "whoosh", "slideCheck", "follow", "typeKick", "typeSlide", "force", "impact", "kickSnd", "zoom", "zoomBack", "zoomUp", "zoomIn",
     "zoomOut", "slideBack", "reactSlide", "t2Weaken", "t2Type", "t2React", "dmg", "react", "legR", "bladeR", "bladeLen", "rehit",
-    "slideRight", "slideLeft", "slideFromStart", "stamina", "needLv2", "slideGuard" }
+    "slideRight", "slideLeft", "slideFromStart", "stamina", "needLv2", "slideGuard", "slideFx", "slideYaw", "t2Right", "slideEfx", "slideEfxPick", "slideEfxSize", "slideEfxSkip", "slideEfxSecs", "slideEfxUp",
+    "slxMode", "slxWave1", "slxWave2", "slxSlowFrom", "slxSlowTo", "slxSlow", "slxEnd", "slxRoll1", "slxRoll2", "slxBlend", "slxStamina2", "slxRec", "slxRecFrom", "slxRecBlend", "slxFree", "slxWindow", "slxBackBlend", "slxActFrom", "slxFree2",
+    "bwMode", "bwDelay", "bwSecs", "bwTick", "bwDmg", "bwBurnPts", "bwFx", "bwFxSize", "bwSndIgnite", "bwSndBurn", "bwSndStop", "bwOutStep", "bwInStep", "bwSndEarly" }
 pcall(function()
     local saved = json.load_file("Pactblade_ex.json")
     if type(saved) ~= "table" then return end
@@ -4220,9 +4635,60 @@ function combo.ex.level()   -- Archfey Combo's learned level (0 = not learned / 
     return lv
 end
 if combo.ex.needLv2 == nil then combo.ex.needLv2 = true end   -- (a saved choice is loaded above)
+function combo.ex.has_ability(n)   -- the held sword's 4 special-skill slots contain EX ability n
+    local has = false
+    pcall(function()
+        local ab = dbg.main_weapon_sd()._Ability
+        for i = 1, 4 do
+            local v = ab["Slot" .. i]
+            if type(v) ~= "number" then v = sdk.to_int64(v) end
+            if v and (v & 0xFF) == n then has = true end
+        end
+    end)
+    return has
+end
+function combo.ex.level_of(kind)   -- a Pactblade skill's learned level (VSB id by its kind: "blast", "slash" ...)
+    local lv = 0
+    pcall(function()
+        local id
+        for vid, e in pairs((dbg.adapter and dbg.adapter.map) or {}) do if e.kind == kind then id = vid end end
+        if not id then return end
+        local list = runtime.player().human["<SkillContext>k__BackingField"].EnabledCustomSkills
+        local n = 0
+        pcall(function() n = list:call("get_Count") end)
+        if not n or n == 0 then pcall(function() n = list:get_size() end) end
+        for i = 0, (n or 0) - 1 do
+            local e = list[i]
+            if e and e.CustomSkillID == id then lv = tonumber(e.Level) or 0 end
+        end
+    end)
+    return lv
+end
+-- (1.3) an EX's mode: in a release build always "auto" (the sword's special skill + the skill at level 2)
+function combo.ex.mode_of(k)
+    if json.RELEASE then return "auto" end
+    local v = combo.ex[k]
+    if v == nil then return (k == "mode") and "auto" or "on" end
+    return v
+end
+function combo.ex.bw_active()   -- Caustic Brew EX: Tornadic Strike (EX ability 5) + Caustic Brew level 2
+    local m = combo.ex.mode_of("bwMode")
+    if m == "on" then return true elseif m ~= "auto" then return false end
+    return combo.ex.has_ability(5) and (not combo.ex.needLv2 or combo.ex.level_of("brew") >= 2)
+end
+-- (freeze hunt) what the EX menus show, read on the GAME thread twice a second (menu code must not call into the game)
+combo.ex.status = {}
+re.on_pre_application_entry("UpdateBehavior", function()
+    local st = combo.ex.status
+    local now = os.clock()
+    if json.RELEASE or (st.t and now - st.t < 0.5) then return end
+    st.t = now
+    pcall(function() st.cloud, st.lv, st.on = combo.ex.weapon_has(), combo.ex.level(), combo.ex.active() end)
+    pcall(function() st.plen, st.lvSlash, st.slxOn = combo.ex.has_ability(2), combo.ex.level_of("slash"), combo.slx and combo.slx.active() end)
+    pcall(function() st.torn, st.lvBrew, st.bwOn = combo.ex.has_ability(5), combo.ex.level_of("brew"), combo.ex.bw_active() end)
+end)
 function combo.ex.active()
-    if json.RELEASE then return false end   -- (1.2 user: in the release the EX version is hidden and off)
-    local m = combo.ex.mode
+    local m = combo.ex.mode_of("mode")   -- (1.3: the EX in the release too - always auto there)
     if m == "on" then return true elseif m == "off" then return false end
     local now = os.clock()
     if combo.ex.actT and now - combo.ex.actT < 0.5 then return combo.ex.act end   -- (checked twice a second)
@@ -4236,19 +4702,638 @@ end
 function combo.ex.name_update()
     local ok, sd = pcall(require, "VSB.game.skilldefs")
     local reg = ok and type(sd) == "table" and sd.registry
-    local id = combo.ex.vsb_id()
-    if not reg or not reg.text or not id then return end
-    local lv = reg.customSkills and reg.customSkills[id]
-    local g = lv and ((lv[2] and lv[2].nameGuid) or (lv[1] and lv[1].nameGuid))
-    local t = g and reg.text[g]
-    if type(t) ~= "table" or type(t.uiName) ~= "string" then return end
-    t.pbBase = t.pbBase or t.uiName
-    local want = (live.on and combo.ex.active()) and (t.pbBase .. " EX") or t.pbBase
-    if t.uiName == want then return end
-    t.uiName = want
-    combo.ex.nameNow = want
-    pcall(function() require("VSB.game.skillstate").refresh_hud() end)   -- (the HUD palette rewrites its labels)
+    if not reg or not reg.text then return end
+    local changed = false
+    for _, k in ipairs({ { "combo", combo.ex.active }, { "slash", function() return combo.slx and combo.slx.active() end },
+                         { "brew", function() return combo.ex.bw_active() end } }) do
+        pcall(function()
+            local id
+            for vid, e in pairs((dbg.adapter and dbg.adapter.map) or {}) do if e.kind == k[1] then id = vid end end
+            local lv = id and reg.customSkills and reg.customSkills[id]
+            local g = lv and ((lv[2] and lv[2].nameGuid) or (lv[1] and lv[1].nameGuid))
+            local t = g and reg.text[g]
+            if type(t) ~= "table" or type(t.uiName) ~= "string" then return end
+            t.pbBase = t.pbBase or t.uiName
+            local want = (live.on and k[2]()) and (t.pbBase .. " EX") or t.pbBase
+            if t.uiName == want then return end
+            t.uiName = want
+            if k[1] == "combo" then combo.ex.nameNow = want end
+            changed = true
+        end)
+    end
+    if changed then pcall(function() require("VSB.game.skillstate").refresh_hud() end) end   -- (the HUD palette rewrites its labels)
 end
+-- (user 2026-10-28) the WEAPON's special skill text too: inventory / equipment / storage item details and the
+-- appraisal screens show EX ability 1 as "Cloudfall Strike" - while Pactblade is on (test builds: EX is hidden in a
+-- release) its name + description messages read as Archfey Combo EX. The texts come from app.GUIMessageData.getMessage
+-- (equipmentabilityinfomationdata.user: _NameMsgData / _DescriptionData); its _MessageId (+0x18) compared as 2 raw
+-- qwords (Guid bytes), so the hook costs almost nothing for every other text
+combo.ex.MSG = {   -- { qword 1, qword 2, text }
+    { 4970606131006708333, 2262692270966793886, "Archfey Combo EX" },   -- d5089a6d-23f0-44fb-9e66-ffd6a1b2661f
+    { 5503964769922421141, 3857256549669521575,
+      "An advanced form of Archfey Combo that adds\na kick and backflip, a sliding cut, and then\nthe falling strike. Needs Archfey Combo at level 2." },   -- (user: one line ran out of the box)   -- 077d9195-...
+}
+combo.ex.MSG[3] = { 4907311962357601682, 2543925750943260086, "Eldritch Slash EX" }   -- ce599592-463a-441a-b61d-f1fffdd64d23
+combo.ex.MSG[4] = { 4630196714323512994, -6921765411289744733,
+    "An advanced form of Eldritch Slash. Press again\nas the first cut lands for a sweeping second\nslash and wave. Needs Eldritch Slash at level 2." }   -- 3d6f0ea2-...
+combo.ex.MSG[5] = { 5339528177135007678, -5847658842150820701, "Caustic Brew EX" }   -- 4a5237be-d096-4a19-a3a4-ede943f1d8ae
+combo.ex.MSG[6] = { 5272403418500257997, 3880329162121037737,
+    "An advanced form of Tasha's Caustic Brew. Moments\nafter the acid lands, the whole stream bursts\ninto flame. Needs Caustic Brew at level 2." }   -- 884358cd-...
+-- (user 2026-10-30) the weapon special skills shown as our EX skills (name / description by ability id, message id or
+-- the game's own name in a text); each only while its EX isn't switched off
+combo.ex.RN = {
+    { ab = 1, nameId = "d5089a6d-23f0-44fb-9e66-ffd6a1b2661f", descId = "077d9195-02cc-4c62-a7c8-993265ba8735", fallback = "Cloudfall Strike",
+      name = combo.ex.MSG[1][3], desc = combo.ex.MSG[2][3], on = function() return combo.ex.mode_of("mode") ~= "off" end },
+    { ab = 2, nameId = "ce599592-463a-441a-b61d-f1fffdd64d23", descId = "3d6f0ea2-c361-4041-a33a-7d1108f3f09f", fallback = "Plenilune Slash",
+      name = combo.ex.MSG[3][3], desc = combo.ex.MSG[4][3], on = function() return combo.ex.mode_of("slxMode") ~= "off" end },
+    { ab = 5, nameId = "4a5237be-d096-4a19-a3a4-ede943f1d8ae", descId = "884358cd-56f9-492b-a947-d067d0b2d935", fallback = "Tornadic Strike",
+      name = combo.ex.MSG[5][3], desc = combo.ex.MSG[6][3], on = function() return combo.ex.mode_of("bwMode") ~= "off" end },
+}
+function combo.ex.rn_game_name(e)   -- the game's own name of that special skill (its language), read once
+    if e.gameName then return e.gameName end
+    pcall(function()
+        local was = combo.ex.msgOff
+        combo.ex.msgOff = true   -- (our own message hook must not answer)
+        local t = sdk.find_type_definition("via.gui.message"):get_method("get(System.Guid)"):call(nil, require("DragonCore.game.guid").parse(e.nameId))
+        combo.ex.msgOff = was
+        if t and tostring(t) ~= "" then e.gameName = tostring(t) end
+    end)
+    return e.gameName or e.fallback
+end
+function combo.ex.rn_by_ab(id)
+    for _, e in ipairs(combo.ex.RN) do if e.ab == id and e.on() then return e end end
+end
+function combo.ex.rn_by_msgid(idstr)
+    for _, e in ipairs(combo.ex.RN) do if e.nameId == idstr and e.on() then return e end end
+end
+function combo.ex.rn_by_name(nm)   -- exactly the game's name
+    for _, e in ipairs(combo.ex.RN) do if e.on() and nm == combo.ex.rn_game_name(e) then return e end end
+end
+function combo.ex.rn_in_text(cur)   -- the game's name inside a text: entry, position
+    if not cur or cur == "" then return nil end
+    for _, e in ipairs(combo.ex.RN) do
+        if e.on() then
+            local i = cur:find(combo.ex.rn_game_name(e), 1, true)
+            if i then return e, i end
+        end
+    end
+end
+function combo.ex.msg_on()
+    if not live.on then return false end
+    for _, e in ipairs(combo.ex.RN) do if e.on() then return true end end
+    return false
+end
+pcall(function()
+    local td = sdk.find_type_definition("app.GUIMessageData")
+    for _, sig in ipairs(dbg.RESEARCH and { "getMessage()", "getMessage(System.Object[])" } or {}) do   -- (hot: research only)
+        local m = td:get_method(sig)
+        if m then sdk.hook(m, function(args)
+            local st = thread.get_hook_storage()
+            st.pbMsg = nil
+            if not combo.ex.msg_on() then return end
+            pcall(function()
+                local this = sdk.to_managed_object(args[2])
+                local q1 = this:read_qword(0x18)
+                for _, e in ipairs(combo.ex.MSG) do
+                    if q1 == e[1] and this:read_qword(0x20) == e[2] then st.pbMsg = e[3]; return end
+                end
+            end)
+        end, function(r)
+            local st = thread.get_hook_storage()
+            local t = st.pbMsg
+            st.pbMsg = nil
+            if not t then return r end
+            if not combo.ex.msgNoted then combo.ex.msgNoted = true; note("EX: the weapon's special skill text -> " .. combo.ex.MSG[1][3]) end
+            return sdk.to_ptr(sdk.create_managed_string(t))
+        end) end
+    end
+    -- (the item details' ability list builds its own entry - its Name set again for ability 1)
+    local m2 = sdk.find_type_definition("app.GUIBase.ItemDetail2Ref"):get_method("makeEquipmentAbilityInfo")
+    if m2 then sdk.hook(m2, function(args) end, function(r)
+        if not combo.ex.msg_on() then return r end
+        pcall(function()
+            local info = sdk.to_managed_object(r)
+            local e = info and combo.ex.rn_by_ab((tonumber(info.AbilityId) or -1) & 0xFF)
+            if e then info:set_field("Name", sdk.create_managed_string(e.name)) end
+        end)
+        return r
+    end) end
+    -- (user: still "Cloudfall Strike" in the item screen's Special Skills list) the list row and the info box write
+    -- their texts themselves (EquipmentAbilityListItem.updateDisp -> TxtAbilityName; EquipAbilityInfoRef.setInfo ->
+    -- TxtTitle / TxtDescription): written again right after them for ability 1
+    local function id_of(v)
+        if type(v) == "userdata" then local ok, x = pcall(sdk.to_int64, v); v = ok and x or nil end
+        return (math.tointeger(tonumber(v) or -1) or -1) & 0xFF
+    end
+    local li = sdk.find_type_definition("app.GUIBase.ItemDetail2Ref.EquipmentAbilityListItem")
+    local m3 = li and li:get_method("updateDisp")
+    combo.ex.cloudName = nil   -- the game's own Cloudfall Strike name (its language), read once
+    -- the trees to walk for Cloudfall Strike texts (addr -> { obj, why }); a new one is walked at once
+    combo.ex.roots = {}
+    function combo.ex.add_root(top, why)
+        local k = top:get_address()
+        local r = combo.ex.roots[k]
+        if r then r.seen = os.clock(); return end
+        combo.ex.roots[k] = { obj = top:add_ref(), why = why, seen = os.clock() }
+        combo.ex.walkSoon = true
+    end
+    function combo.ex.top_of(c)
+        local top
+        for _ = 1, 60 do
+            if not c then break end
+            top = c
+            local okP, par = pcall(c.call, c, "get_Parent")
+            c = okP and par or nil
+        end
+        return top
+    end
+    -- (RE: the appraisal lists) their own classes - after them, their panel's tree is walked
+    for _, h in ipairs({ { "app.ui023901.EquipExSkillView", "updateDisp", { "PnlRoot", "SpecialSkillPanel", "BackGroundPanel" } },
+                         { "app.ui023901.EquipExSkillView", "createSlotInfoList", { "PnlRoot", "SpecialSkillPanel" } },
+                         { "app.ui042002.ItemStatusPanel", "setupEqipmentAbility", { "PnlNoCondition", "PnlNoElement", "TxtElemTitle" } },
+                         { "app.GUIBase.EquipmentAbilityCompareWindowRef", "setup", { "PnlRoot", "TxtHeader" } },
+                         { "app.GUIBase.EquipmentAbilityCompareWindowRef", "activate", { "PnlRoot", "TxtHeader" } } }) do
+        pcall(function()
+            local td = sdk.find_type_definition(h[1])
+            for _, m in ipairs(td and td:get_methods() or {}) do
+                if m:get_name() == h[2] then
+                    sdk.hook(m, function(args) thread.get_hook_storage().pbView = combo.ex.msg_on() and sdk.to_managed_object(args[2]) or nil end,
+                        function(r)
+                            local this = thread.get_hook_storage().pbView
+                            thread.get_hook_storage().pbView = nil
+                            if not this then return r end
+                            pcall(function()
+                                for _, f in ipairs(h[3]) do
+                                    local okF, c = pcall(this.get_field, this, f)
+                                    local top = okF and c and combo.ex.top_of(c)
+                                    if top then
+                                        combo.ex.add_root(top, h[1]:match("([^.]+)$") .. "." .. h[2])
+                                        if not combo.ex["viewNoted" .. h[1] .. h[2]] then
+                                            combo.ex["viewNoted" .. h[1] .. h[2]] = true
+                                            note("EX: weapon text RE: " .. h[1] .. "." .. h[2] .. " fired - its tree registered")
+                                        end
+                                        break
+                                    end
+                                end
+                            end)
+                            return r
+                        end)
+                end
+            end
+        end)
+    end
+    -- (appraisal + every other screen listing special skills) their icons' tree, from every icon setup method
+    for _, m in ipairs(sdk.find_type_definition("app.GUIBase.SkillIconRef"):get_methods()) do
+        local nm = m:get_name()
+        if nm == "setup" or nm == "setupAppraisal" or nm == "setAppraisalVisible" then
+            pcall(sdk.hook, m, function(args)
+                if not combo.ex.msg_on() then return end
+                pcall(function()
+                    local icon = sdk.to_managed_object(args[2])
+                    local top = combo.ex.top_of(icon and icon:get_field("Pnl"))
+                    if top then
+                        combo.ex.add_root(top, "icons (" .. nm .. ")")
+                        if not combo.ex["iconNoted" .. nm] then combo.ex["iconNoted" .. nm] = true; note("EX: weapon text RE: SkillIconRef." .. nm .. " fired") end
+                    end
+                end)
+            end, function(r) return r end)
+        end
+    end
+    local function cloud_name()
+        if combo.ex.cloudName then return combo.ex.cloudName end
+        pcall(function()
+            local g = require("DragonCore.game.guid").parse("d5089a6d-23f0-44fb-9e66-ffd6a1b2661f")
+            local t = sdk.find_type_definition("via.gui.message"):get_method("get(System.Guid)"):call(nil, g)
+            if t and tostring(t) ~= "" then combo.ex.cloudName = tostring(t) end
+        end)
+        return combo.ex.cloudName or "Cloudfall Strike"
+    end
+    if m3 then sdk.hook(m3, function(args)
+        if not combo.ex.msg_on() then return end
+        pcall(function()
+            local info = sdk.to_managed_object(args[3])
+            if not info then return end
+            local id = id_of(info:get_field("AbilityId"))
+            local nm = info:get_field("Name")
+            nm = nm and tostring(type(nm) == "userdata" and nm:call("ToString") or nm) or ""
+            local e = combo.ex.rn_by_ab(id) or combo.ex.rn_by_name(nm)
+            if e then
+                info:set_field("Name", sdk.create_managed_string(e.name))
+                pcall(function()   -- (kept: re-checked while the menu is open)
+                    local txt = sdk.to_managed_object(args[2]):get_field("TxtAbilityName")
+                    if txt then
+                        combo.ex.rowTxt = combo.ex.rowTxt or {}; combo.ex.rowTxt[txt:get_address()] = txt:add_ref()
+                        combo.ex.rowWant = combo.ex.rowWant or {}; combo.ex.rowWant[txt:get_address()] = e.name
+                    end
+                    local c, top = txt, nil
+                    for _ = 1, 60 do
+                        if not c then break end
+                        top = c
+                        local okP, par = pcall(c.call, c, "get_Parent")
+                        c = okP and par or nil
+                    end
+                    if top then combo.ex.add_root(top, "inventory row") end
+                end)
+                if not combo.ex.rowNoted then
+                    combo.ex.rowNoted = true
+                    note(("EX: weapon text - Special Skills row renamed (ability %s, was '%s')"):format(tostring(id), nm))
+                end
+            end
+        end)
+    end, function(r) return r end) end
+    -- (user: still "Cloudfall Strike" in the inventory) the message ID given to a text control / resolved by the engine
+    local function ours(ptr)   -- the Guid at ptr -> our text or nil
+        local v = sdk.to_valuetype(ptr, "System.Guid")
+        local q1 = v:read_qword(0)
+        for _, e in ipairs(combo.ex.MSG) do if q1 == e[1] and v:read_qword(8) == e[2] then return e[3] end end
+    end
+    local function once(k, what) if not combo.ex[k] then combo.ex[k] = true; note("EX: weapon text via " .. what) end end
+    local tx = sdk.find_type_definition("via.gui.Text")
+    -- the kept row text boxes: ours again whenever something else wrote them (menu open only)
+    re.on_pre_application_entry("UpdateBehavior", function()
+        local rows = combo.ex.rowTxt
+        if not rows then return end
+        if not combo.ex.menuOpen then combo.ex.rowTxt, combo.ex.rowWant = nil, nil; return end   -- (set by the menu check further down)
+        if os.clock() < (combo.ex.nextRowFix or 0) then return end
+        combo.ex.nextRowFix = os.clock() + 0.2
+        for k, txt in pairs(rows) do
+            local want = (combo.ex.rowWant and combo.ex.rowWant[k]) or combo.ex.MSG[1][3]
+            local ok = pcall(function()
+                local cur = tostring(txt:call("get_Message") or "")
+                if cur:find(want, 1, true) then return end
+                if not combo.ex.rowFixNoted then
+                    combo.ex.rowFixNoted = true
+                    local mid = "?"
+                    pcall(function() mid = require("DragonCore.game.guid").to_string(txt:call("get_MessageId")) end)
+                    note(("EX: weapon text RE: the row box was set again - message '%s', message id %s"):format(cur, mid))
+                end
+                pcall(function() txt:call("set_MessageId(System.Guid)", ValueType.new(sdk.find_type_definition("System.Guid"))) end)
+                txt:call("set_Message", want)
+            end)
+            if not ok then rows[k] = nil end
+        end
+    end)
+    local m5 = dbg.RESEARCH and tx and tx:get_method("set_MessageId(System.Guid)")   -- (hot native: research only)
+    if m5 then sdk.hook(m5, function(args)
+        local st = thread.get_hook_storage()
+        st.pbTxt = nil
+        if not combo.ex.msg_on() then return end
+        local ok, t = pcall(ours, args[3])
+        if ok and t then st.pbTxt, st.pbTxtObj = t, sdk.to_managed_object(args[2])
+        elseif not ok and not combo.ex.idErr then combo.ex.idErr = true; note("EX: weapon text: set_MessageId read failed: " .. tostring(t)) end
+    end, function(r)
+        local st = thread.get_hook_storage()
+        local t, obj = st.pbTxt, st.pbTxtObj
+        st.pbTxt, st.pbTxtObj = nil, nil
+        if t and obj then pcall(function() obj:call("set_Message", t) end); once("viaSetId", "Text.set_MessageId") end
+        return r
+    end) end
+    local gm = sdk.find_type_definition("via.gui.message")
+    for _, sig in ipairs({ "get(System.Guid)", "get(System.Guid, via.Language)" }) do
+        local m6 = dbg.RESEARCH and gm and gm:get_method(sig)   -- (hot native: research only)
+        if m6 then sdk.hook(m6, function(args)
+            local st = thread.get_hook_storage()
+            st.pbGet = nil
+            if not combo.ex.msg_on() or combo.ex.msgOff then return end
+            local ok, t = pcall(ours, args[2])
+            if ok and t then st.pbGet = t
+            elseif not ok and not combo.ex.getErr then combo.ex.getErr = true; note("EX: weapon text: message.get read failed: " .. tostring(t)) end
+        end, function(r)
+            local st = thread.get_hook_storage()
+            local t = st.pbGet
+            st.pbGet = nil
+            if not t then return r end
+            once("viaGet", "message.get")
+            return sdk.to_ptr(sdk.create_managed_string(t))
+        end) end
+    end
+    -- (still not: a cached text) via.gui.Text.set_Message with the game's own Cloudfall Strike texts, while a menu is open
+    local GUIDS = { "d5089a6d-23f0-44fb-9e66-ffd6a1b2661f", "077d9195-02cc-4c62-a7c8-993265ba8735" }
+    local orig = nil   -- { [game text] = our text }
+    local function originals()
+        if orig then return orig end
+        local o, n = {}, 0
+        pcall(function()
+            local guid = require("DragonCore.game.guid")
+            local get = sdk.find_type_definition("via.gui.message"):get_method("get(System.Guid)")
+            for _, e in ipairs(combo.ex.RN) do
+                if e.on() then
+                    for _, pair in ipairs({ { e.nameId, e.name }, { e.descId, e.desc } }) do
+                        local was = combo.ex.msgOff   -- (our own get hook must not answer this)
+                        combo.ex.msgOff = true
+                        local t = get:call(nil, guid.parse(pair[1]))
+                        combo.ex.msgOff = was
+                        if t and tostring(t) ~= "" then o[tostring(t)] = pair[2]; n = n + 1 end
+                    end
+                end
+            end
+        end)
+        if n == 0 then   -- (message table not ready: English, retried)
+            local f = {}
+            for _, e in ipairs(combo.ex.RN) do if e.on() then f[e.fallback] = e.name end end
+            return f
+        end
+        orig = o
+        combo.ex.origLens = {}
+        for k in pairs(o) do combo.ex.origLens[utf8.len(k) or #k] = true end
+        local keys = {}
+        for k in pairs(o) do keys[#keys + 1] = k:sub(1, 40) end
+        note("EX: weapon text - the game's texts to replace: " .. table.concat(keys, " | "))
+        return o
+    end
+    local menu = { open = false, next = 0 }
+    re.on_pre_application_entry("UpdateBehavior", function()
+        if os.clock() < menu.next then return end
+        menu.next = os.clock() + 0.2
+        local open = false
+        if combo.ex.msg_on() then pcall(function()
+            local gm = sdk.get_managed_singleton("app.GuiManager")
+            open = gm:call("isPausedGUI") == true or gm:call("IsOpenMainFlowUI") == true or gm:call("isFixedDispGameMenuUI") == true
+        end) end
+        menu.open = open
+        combo.ex.menuOpen = open
+    end)
+    -- (2nd net) the screen's whole text tree: any text box still showing the game's text gets ours; the screen's root is
+    -- found from the info box (its top ancestor), walked then and every 0.5 s while the menu stays open
+    local function retext(root)
+        local n = 0
+        local function walk(c, depth)
+            if not c or depth > 30 then return end
+            pcall(function()
+                if c:get_type_definition():is_a("via.gui.Text") then
+                    local cur = tostring(c:call("get_Message") or "")
+                    for o, nw in pairs(originals()) do
+                        local i = cur:find(o, 1, true)
+                        if i then c:call("set_Message", cur:sub(1, i - 1) .. nw .. cur:sub(i + #o)); n = n + 1; break end
+                    end
+                end
+            end)
+            local ch
+            pcall(function() ch = c:call("get_Child") end)
+            local guard = 0
+            while ch and guard < 400 do
+                walk(ch, depth + 1)
+                local nx
+                pcall(function() nx = ch:call("get_Next") end)
+                ch, guard = nx, guard + 1
+            end
+        end
+        walk(root, 0)
+        return n
+    end
+    combo.ex.retext = retext
+    -- (user idea) the SKILL name lookups: a result that is the game's Cloudfall Strike name -> ours
+    local RISING = -1
+    pcall(function() RISING = sdk.find_type_definition("app.HumanCustomSkillID"):get_field("Job01_RisingLunge"):get_data(nil) & 0xFFFFFFFF end)
+    local function str_of(r)
+        local ok, v = pcall(function() local o = sdk.to_managed_object(r); return o and o:call("ToString") end)
+        return ok and v and tostring(v) or nil
+    end
+    local function name_hook(tn, sig, label)
+        pcall(function()
+            local m = sdk.find_type_definition(tn):get_method(sig)
+            if not m then return end
+            sdk.hook(m, function(args) end, function(r)
+                if not combo.ex.msg_on() then return r end
+                local cur = str_of(r)
+                local e = cur and combo.ex.rn_by_name(cur)
+                if not e then return r end
+                if not combo.ex["nameNoted" .. label] then combo.ex["nameNoted" .. label] = true; note("EX: weapon text - skill name via " .. label) end
+                return sdk.to_ptr(sdk.create_managed_string(e.name))
+            end)
+        end)
+    end
+    name_hook("app.GuiManager", "getExCustomSkillName(app.HumanCustomSkillID)", "GuiManager.getExCustomSkillName")
+    name_hook("app.GUIBase", "getCustomSkillName(app.HumanCustomSkillID, app.HumanCustomSkillLevelNo)", "GUIBase.getCustomSkillName")
+    name_hook("app.GUIBase", "getCustomSkillName(app.Character.JobEnum, app.HumanCustomSkillID, app.HumanCustomSkillLevelNo)", "GUIBase.getCustomSkillName(job)")
+    pcall(function()
+        local m = sdk.find_type_definition("app.GuiManager"):get_method("getExCustomSkillDetail(app.HumanCustomSkillID)")
+        if not m then return end
+        sdk.hook(m, function(args)
+            local st = thread.get_hook_storage()
+            st.pbDet = combo.ex.msg_on() and (sdk.to_int64(args[3]) & 0xFFFFFFFF) == RISING or nil
+        end, function(r)
+            if not thread.get_hook_storage().pbDet then return r end
+            thread.get_hook_storage().pbDet = nil
+            if not combo.ex.detNoted then combo.ex.detNoted = true; note("EX: weapon text - skill description via GuiManager.getExCustomSkillDetail") end
+            return sdk.to_ptr(sdk.create_managed_string(combo.ex.MSG[2][3]))
+        end)
+    end)
+    -- (every GUI) Cloudfall Strike by text or by message id -> ours
+    local CLOUD_ID = "d5089a6d-23f0-44fb-9e66-ffd6a1b2661f"
+    local guidm = require("DragonCore.game.guid")
+    local gs = { found = {}, nextFull = 0, nextHit = 0, hits = {} }
+    local EMPTY_ID = "00000000-0000-0000-0000-000000000000"
+    local msgGet = sdk.find_type_definition("via.gui.message"):get_method("get(System.Guid)")
+    local function fix_text(c)   -- a box showing one of the RN skills (by id or text) -> ours, kept in sync; true if renamed
+        local eId = combo.ex.rn_by_msgid(guidm.to_string(c:call("get_MessageId")))
+        local cur = tostring(c:call("get_Message") or "")
+        local eT, i = combo.ex.rn_in_text(cur)
+        local e = eId or eT
+        if not e then return false end
+        local cn = combo.ex.rn_game_name(e)
+        if eId then pcall(function() c:call("set_MessageId(System.Guid)", ValueType.new(sdk.find_type_definition("System.Guid"))) end) end
+        if eT ~= e then i = nil end
+        c:call("set_Message", i and (cur:sub(1, i - 1) .. e.name .. cur:sub(i + #cn)) or e.name)
+        gs.hits[c:get_address()] = c:add_ref()
+        gs.orig = gs.orig or {}
+        gs.orig[c:get_address()] = { e.name, cn }
+        return true
+    end
+    combo.ex.fix_text = fix_text
+    for _, h in ipairs({ { "app.GUIBase.EquipmentAbilityCompareWindowRef.SlotListItem", { "TxtCommon" } },
+                         { "app.ui023901.EquipExSkillView.SlotListItem", { "BeforeTxt", "AfterTxt" } },
+                         { "app.ui042002.ItemStatusPanel.SlotListItem", { "TxtCommon" } },
+                         { "app.ui022502.ListItem", { "Txt0", "Txt1" } } }) do
+        pcall(function()
+            local td = sdk.find_type_definition(h[1])
+            local m = td and td:get_method("updateDisp")
+            if not m then return end
+            sdk.hook(m, function(args) thread.get_hook_storage().pbSlot = combo.ex.msg_on() and sdk.to_managed_object(args[2]) or nil end,
+                function(r)
+                    local row = thread.get_hook_storage().pbSlot
+                    thread.get_hook_storage().pbSlot = nil
+                    if not row then return r end
+                    for _, f in ipairs(h[2]) do
+                        pcall(function()
+                            local t = row:get_field(f)
+                            if t and fix_text(t) and not combo.ex["slotNoted" .. h[1]] then
+                                combo.ex["slotNoted" .. h[1]] = true
+                                note("EX: weapon text - renamed in " .. h[1] .. "." .. f)
+                            end
+                        end)
+                    end
+                    return r
+                end)
+        end)
+    end
+    local function fix_tree(root, guiName, probe)
+        local n, visited, clouds = 0, 0, {}
+        local function walk(c, depth, path)
+            if not c or depth > 40 then return end
+            visited = visited + 1
+            pcall(function()
+                if c:get_type_definition():is_a("via.gui.Text") then
+                    local cur = tostring(c:call("get_Message") or "")
+                    if probe and #clouds < 8 and cur:find("Cloud", 1, true) then
+                        local mid = "?"
+                        pcall(function() mid = guidm.to_string(c:call("get_MessageId")) end)
+                        clouds[#clouds + 1] = ("%s = '%s' (id %s)"):format(path, cur:sub(1, 40), mid)
+                    end
+                    if fix_text(c) then
+                        n = n + 1
+                        if not gs.noted then
+                            gs.noted = true
+                            note(("EX: weapon text RE: an EX special skill found in GUI '%s' at %s - renamed"):format(guiName, path))
+                        end
+                    end
+                end
+            end)
+            local ch
+            pcall(function() ch = c:call("get_Child") end)
+            local guard = 0
+            while ch and guard < 500 do
+                local nmC = "?"
+                pcall(function() nmC = tostring(ch:call("get_Name")) end)
+                walk(ch, depth + 1, path .. "/" .. nmC)
+                local nx
+                pcall(function() nx = ch:call("get_Next") end)
+                ch, guard = nx, guard + 1
+            end
+        end
+        walk(root, 0, "")
+        if probe then
+            note(("EX: weapon text RE: tree of the row box walked - %d elements, %d renamed; 'Cloud' texts: %s"):format(visited, n,
+                #clouds > 0 and table.concat(clouds, " | ") or "none"))
+        end
+        return n
+    end
+    re.on_pre_application_entry("UpdateBehavior", function()
+        -- (user: "for a split second it still shows Cloudfall Strike") a freshly filled row walks at once, even before the
+        -- menu flag (checked every 0.2 s) flips; the found boxes every 0.1 s
+        if not combo.ex.msg_on() then   -- Pactblade off: our boxes back to the game's name
+            for k, c in pairs(gs.hits) do pcall(function()
+                local o = gs.orig and gs.orig[k]
+                if o and tostring(c:call("get_Message") or ""):find(o[1], 1, true) then c:call("set_Message", o[2]) end
+            end) end
+            gs.hits, gs.orig = {}, {}; combo.ex.roots = {}
+            return
+        end
+        if not next(combo.ex.roots) and not next(gs.hits) then return end
+        local now = os.clock()
+        for k, r in pairs(combo.ex.roots) do   -- a screen whose icons were not set up for 10 s: dropped
+            if now - r.seen > 10 then combo.ex.roots[k] = nil end
+        end
+        if now >= gs.nextHit then   -- the boxes found: ours again if the game set the Cloudfall message id back
+            gs.nextHit = now + 0.1
+            for k, c in pairs(gs.hits) do
+                local ok = pcall(function()
+                    local midV = c:call("get_MessageId")
+                    local id = guidm.to_string(midV)
+                    if combo.ex.rn_by_msgid(id) then fix_text(c)
+                    elseif id ~= EMPTY_ID then   -- (a reused box with another skill) that skill's own text again
+                        local real = tostring(msgGet:call(nil, midV) or "")
+                        if real ~= "" and tostring(c:call("get_Message") or "") ~= real then c:call("set_Message", real) end
+                    else
+                        fix_text(c)   -- (only when it still shows a game name)
+                    end
+                end)
+                if not ok then gs.hits[k] = nil end
+            end
+        end
+        if combo.ex.walkSoon then combo.ex.walkSoon = false; gs.nextRow = 0 end
+        if next(combo.ex.roots) and now >= (gs.nextRow or 0) then   -- the registered trees: new rows (every 1 s)
+            gs.nextRow = now + 1.0
+            for k, r in pairs(combo.ex.roots) do
+                local okR, n = pcall(fix_tree, r.obj, r.why, not r.probed)
+                r.probed = true
+                if not okR then combo.ex.roots[k] = nil end
+            end
+        end
+    end)
+    re.on_pre_application_entry("UpdateBehavior", function()
+        local r = combo.ex.menuRoot
+        if not r then return end
+        if not menu.open then combo.ex.menuRoot = nil; return end
+        if os.clock() < (combo.ex.nextRetext or 0) then return end
+        combo.ex.nextRetext = os.clock() + 0.5
+        local ok, n = pcall(retext, r)
+        if ok and n > 0 and not combo.ex.retextNoted then combo.ex.retextNoted = true; note(("EX: weapon text - %d text box(es) fixed in the screen's tree"):format(n)) end
+    end)
+    local m7 = dbg.RESEARCH and tx and tx:get_method("set_Message(System.String)")   -- (hot native, every text: research only)
+    if m7 then sdk.hook(m7, function(args)
+        if not combo.ex.msg_on() then return end
+        pcall(function()
+            local str = sdk.to_managed_object(args[3])
+            if not str then return end
+            if not menu.open then   -- (outside the menu flag: only a text of exactly the original's length)
+                local lens = combo.ex.origLens or { [16] = true }
+                if not lens[str:read_dword(0x10)] then return end
+            end
+            local cur = str:ToString()
+            local t = originals()[cur]
+            if not t and menu.open then   -- (the name inside a longer text - tags around it)
+                for o, n in pairs(originals()) do
+                    local i = cur:find(o, 1, true)
+                    if i then t = cur:sub(1, i - 1) .. n .. cur:sub(i + #o); break end
+                end
+            end
+            if not t then
+                if cur:find("Cloud", 1, true) and (combo.ex.cloudSeen or 0) < 6 then   -- (RE: what the row really gets)
+                    combo.ex.cloudSeen = (combo.ex.cloudSeen or 0) + 1
+                    note("EX: weapon text probe: set_Message(" .. cur:sub(1, 80) .. ")")
+                end
+                return
+            end
+            local ms = sdk.create_managed_string(t)
+            combo.ex.keepStr = ms   -- (kept alive until the call has copied it)
+            args[3] = sdk.to_ptr(ms)
+            if not combo.ex.setMsgNoted then
+                combo.ex.setMsgNoted = true
+                local who = "?"
+                pcall(function()
+                    local c = sdk.to_managed_object(args[2])
+                    local names = {}
+                    for _ = 1, 6 do
+                        if not c then break end
+                        names[#names + 1] = tostring(c:call("get_Name"))
+                        c = c:call("get_Parent")
+                    end
+                    who = table.concat(names, " < ")
+                end)
+                note("EX: weapon text via Text.set_Message on " .. who)
+            end
+        end)
+    end, function(r) return r end) end
+    local ir = sdk.find_type_definition("app.GUIBase.EquipAbilityInfoRef")
+    local m4 = ir and ir:get_method("setInfo")
+    if m4 then sdk.hook(m4, function(args)
+        local st = thread.get_hook_storage()
+        st.pbInfo = nil
+        if not combo.ex.msg_on() then return end
+        local e = combo.ex.rn_by_ab(sdk.to_int64(args[3]) & 0xFF)
+        if e then st.pbInfo, st.pbInfoE = sdk.to_managed_object(args[2]), e end
+    end, function(r)
+        local st = thread.get_hook_storage()
+        local box, e = st.pbInfo, st.pbInfoE
+        st.pbInfo, st.pbInfoE = nil, nil
+        if box and e then pcall(function()
+            box:get_field("TxtTitle"):call("set_Message", e.name)
+            box:get_field("TxtDescription"):call("set_Message", e.desc)
+            if not combo.ex.boxNoted then combo.ex.boxNoted = true; note("EX: the special skill info box renamed") end
+            pcall(function() local top = combo.ex.top_of(box:get_field("PnlMain")); if top then combo.ex.add_root(top, "info box") end end)
+            local c, top = box:get_field("PnlMain"), nil
+            for _ = 1, 40 do
+                if not c then break end
+                top = c
+                local okP, par = pcall(c.call, c, "get_Parent")
+                c = okP and par or nil
+            end
+            if top then combo.ex.menuRoot = top:add_ref(); combo.ex.nextRetext = 0 end
+        end) end
+        return r
+    end) end
+end)
 re.on_pre_application_entry("UpdateBehavior", function()
     if os.clock() < (combo.ex.nextName or 0) then return end
     combo.ex.nextName = os.clock() + 1
@@ -4462,7 +5547,7 @@ local function components_of(go, typeName)
 end
 
 -- cues (Blink Behind's way): effects faded out with finishAll after CUE_SECS, sounds from the player's containers
-local function cue_efx(a, ids, pos, rot)
+local function cue_efx(a, ids, pos, rot, secs)   -- (secs: how long it may play, default CUE_SECS)
     for _, mgr in ipairs(components_of(a.character:get_GameObject(), "via.effect.script.ObjectEffectManager2")) do
         combo.cueing = true
         local ok, res = pcall(function()
@@ -4476,7 +5561,7 @@ local function cue_efx(a, ids, pos, rot)
         if ok and res then
             pcall(function()
                 local c = res:add_ref()
-                cueLive[#cueLive + 1] = { c = c, untilT = os.clock() + CUE_SECS }
+                cueLive[#cueLive + 1] = { c = c, untilT = os.clock() + (secs or CUE_SECS) }
                 local idstr = ("%d/%d/%d"):format(ids[1], ids[2], ids[3])
                 if cfg.blastTint and not cfg.noTint[idstr] and not tintSeen[c:get_address()] then
                     tintSeen[c:get_address()] = true
@@ -4819,6 +5904,14 @@ local function dynamic_spot(a, nk)
         local free = {}
         for _, n in ipairs({ "back", "front", "left", "right" }) do if not combo.used[n] then free[#free + 1] = n end end
         if free[1] ~= "back" and #free >= 2 and math.random() < 0.5 then free[1], free[2] = free[2], free[1] end
+        if combo.parts == combo.ex.PARTS and combo.ex.t2Right ~= false then pcall(function()   -- (user: EX T2 to my right, else left)
+            local tPos = combo.target:get_GameObject():get_Transform():get_Position()
+            local pPos = a.character:get_GameObject():get_Transform():get_Position()
+            local fx, fz = flat_dir(tPos.x - pPos.x, tPos.z - pPos.z)
+            if not fx then return end
+            local rx, rz = -fz, fx   -- my right when facing the enemy
+            table.sort(free, function(m, n) return sides[m][1] * rx + sides[m][2] * rz > sides[n][1] * rx + sides[n][2] * rz end)
+        end) end
         order = free
     else
         for _, n in ipairs({ "back", "front", "left", "right" }) do if not combo.used[n] then order[#order + 1] = n end end
@@ -4895,6 +5988,17 @@ function combo.ex.slide_spot(a, nk, np, sides, first)
                         ("%s side, %.1f m %s, %.1f m back%s"):format(sn, math.abs(t[1]), t[1] < 0 and "left" or "right", t[2],
                         firstWhy and (" (set spot: " .. firstWhy .. ")") or "")
                     note(("EX warp to part %d (%s): %s"):format(nk, np.name or np.action or "?", combo.ex.slideSpot))
+                    local ang = math.rad(combo.ex.slideYaw or 0)   -- (user: past the enemy, not into it)
+                    local l = math.sqrt(ddx * ddx + ddz * ddz)
+                    if ang ~= 0 and l > 0.001 then
+                        local fx, fz = ddx / l, ddz / l
+                        local sg = (t[1] >= 0) and 1 or -1   -- toward the side the start was shifted to
+                        local rx, rz = -fz, fx               -- my right when facing (fx, fz)
+                        local nx = math.cos(ang) * fx + sg * math.sin(ang) * rx
+                        local nz = math.cos(ang) * fz + sg * math.sin(ang) * rz
+                        ddx, ddz = nx * l, nz * l
+                        r0 = yaw_rotation(nx, nz)
+                    end
                     return d, r0, ddx, ddz
                 elseif not firstWhy then firstWhy = ddx end
             end
@@ -4960,7 +6064,7 @@ local function combo_update(a)
                 pcall(combo.ex.bank, a, "kick"); pcall(combo.ex.bank, a, "issen")
                 combo.ex.info = "EX combo started"
             end
-            pcall(a.consume_stamina, a, combo.parts == COMBO and COMBO_STAMINA or combo.ex.stamina)
+            pcall(a.consume_stamina, a, (combo.parts == COMBO and COMBO_STAMINA or combo.ex.stamina) + 0.0)   -- (float: see patch_stamina_float)
             combo.aim, combo.aimT, combo.used = nil, now, nil
             if cfg.comboTurn and combo.pick_target then
                 local ok, t, d = pcall(combo.pick_target, a, cfg.comboTurnRange, cfg.comboTurnCone)
@@ -5071,11 +6175,162 @@ function combo.warp_next(a)
         tr:set_Rotation(rot)
         pcall(function() a.character["<CharaController>k__BackingField"]:call("warp") end)
         face(a, dx, dz)
+        if np.shiftRight and combo.ex.slideEfx then pcall(combo.ex.slide_efx, dest, rot) end   -- (where the slide starts)
         combo.reapply = { dest = dest, rot = rot, dx = dx, dz = dz, n = 2 }
         cues(a, useWisps and {} or CUE.arrive_efx, CUE.arrive_snd, dest, rot)
         if useWisps then pcall(wisps.burst, a, true) end
+        if np.shiftRight and useWisps and combo.ex.slideFx then combo.ex.startFx = os.clock() + 0.05; combo.ex.startWisps = useWisps end   -- (the slide's start mark)
         combo_stage(a, nk)
         return true
+end
+-- (user 2026-10-28) the EFFECT VIEWER: every purple effect we made, played in front of me on our own anchor (it stays
+-- there). Layers: the game can't switch an effect's layers at run time (EmitMaskBit = element versions, not layers), so
+-- efx/viewer baked one copy per layer (the other layers shrunk to 0.001; layers we had hidden brought back) - the ticks
+-- as shipped = the real file in my Look colour, otherwise the ticked layers' copies play together (colour 285).
+-- List: data/Pactblade_fxviewer.json, copies: pak_mods/x0033-PactbladeFxViewer.pak (both from efx/viewer/make_list.py).
+dbg.fxv = { res = {}, gos = {}, pick = 1, secs = 6, dist = 3, up = 0, on = {}, info = "", loop = false }
+function dbg.fxv.load()
+    if not dbg.fxv.list then
+        local l = json.load_file("Pactblade_fxviewer.json")
+        dbg.fxv.list = type(l) == "table" and l or {}
+    end
+    return dbg.fxv.list
+end
+function dbg.fxv.play_file(path, pos, rot, secs, scale, skip)
+    local V = dbg.fxv
+    skip = math.max(0, skip or 0)
+    if not V.res[path] then
+        local r = sdk.create_resource("via.effect.EffectResource", path)
+        if not r then return false end
+        V.res[path] = r:add_ref()
+    end
+    local go = sdk.find_type_definition("via.GameObject"):get_method("create(System.String, via.Folder)"):call(nil, "Pactblade_fxview", 0)
+    go = go:add_ref(); go:call(".ctor"); go:set_Name("Pactblade_fxview")
+    go:get_Transform():set_Position(skip > 0 and Vector3f.new(pos.x, pos.y - 500, pos.z) or pos)
+    go:get_Transform():set_Rotation(rot)
+    if scale and scale ~= 1 then pcall(function() go:get_Transform():set_LocalScale(Vector3f.new(scale, scale, scale)) end) end
+    local ep = go:call("createComponent(System.Type)", sdk.typeof("via.effect.EffectPlayer")):add_ref()
+    ep:call("set_Resource", V.res[path]:create_holder("via.effect.EffectResourceHolder"):add_ref())
+    pcall(function() ep:call("set_AutoStart", true) end)
+    if skip > 0 then pcall(function() ep:call("set_PlaySpeed", 10.0) end) end
+    V.gos[#V.gos + 1] = { go = go, ep = ep, untilT = os.clock() + skip / 10 + secs, ffUntil = skip > 0 and (os.clock() + skip / 10) or nil,
+                          pos = Vector3f.new(pos.x, pos.y, pos.z) }
+    return true
+end
+function dbg.fxv.state(k)   -- the ticks of list entry k (first time: as shipped)
+    local V = dbg.fxv
+    local e = V.load()[k]
+    if e and not V.on[k] then
+        local t = {}
+        for _, L in ipairs(e.layers) do t[L.i] = L.on end
+        V.on[k] = t
+    end
+    return V.on[k] or {}
+end
+function dbg.fxv.play(a)
+    local V = dbg.fxv
+    local e = V.load()[V.pick]
+    if not e or not a then V.info = "nothing to play"; return end
+    local tr = a.character:get_GameObject():get_Transform()
+    local rot = tr:get_Rotation()
+    local pos = tr:get_Position() + require("DragonCore.game.mathx").rotate(Vector3f.new(0, V.up, V.dist), rot)
+    local on = V.state(V.pick)
+    local shipped, n = true, 0
+    for _, L in ipairs(e.layers) do
+        if on[L.i] then n = n + 1 end
+        if (on[L.i] == true) ~= (L.on == true) then shipped = false end
+    end
+    V.nextT = os.clock() + V.secs
+    if shipped then
+        local hue = (dbg.misty and dbg.misty.hue and dbg.misty.hue()) or 285
+        local path = e.full:find("%%d") and e.full:format(hue) or e.full
+        V.info = V.play_file(path, pos, rot, V.secs) and ("playing " .. path:match("([^/]+)%.efx$") .. " (as shipped)")
+            or ("not found: " .. path)
+        return
+    end
+    local ok = 0
+    for _, L in ipairs(e.layers) do
+        if on[L.i] and V.play_file(("vfx/effects/pactblade/fxv/%s_L%d.efx"):format(e.copy, L.i), pos, rot, V.secs) then ok = ok + 1 end
+    end
+    V.info = n == 0 and "no layer ticked" or ("playing %d / %d layer copies%s"):format(ok, n,
+        ok < n and " (missing: the viewer pak needs a game restart)" or "")
+end
+function dbg.fxv.stop()
+    for _, o in ipairs(dbg.fxv.gos) do local go = o.go; pcall(function() go:call("destroy(via.GameObject)", go) end) end
+    dbg.fxv.gos = {}
+end
+re.on_pre_application_entry("UpdateBehavior", function()
+    local V = dbg.fxv
+    local now = os.clock()
+    if V.loop and V.nextT and now >= V.nextT then pcall(V.play, runtime.player()) end
+    for i = #V.gos, 1, -1 do
+        local o = V.gos[i]
+        if o.ffUntil and now >= o.ffUntil then   -- fast-forward done: to its spot, normal speed
+            o.ffUntil = nil
+            pcall(function() o.ep:call("set_PlaySpeed", 1.0) end)
+            pcall(function() o.go:get_Transform():set_Position(o.pos) end)
+        end
+        if now > V.gos[i].untilT then
+            local go = V.gos[i].go
+            pcall(function() go:call("destroy(via.GameObject)", go) end)
+            table.remove(V.gos, i)
+        end
+    end
+end)
+re.on_script_reset(function() dbg.fxv.stop() end)
+function dbg.fxv.menu()
+    local V = dbg.fxv
+    local list = V.load()
+    if #list == 0 then imgui.text("the list is missing: reframework/data/Pactblade_fxviewer.json"); return end
+    local defer = require("DragonCore.game.actor_fx").defer
+    local names = {}
+    for i, e in ipairs(list) do names[i] = e.label end
+    local ch
+    ch, V.pick = imgui.combo("effect##fxv", V.pick, names)
+    local e = list[V.pick]
+    local on = V.state(V.pick)
+    _, V.dist = imgui.slider_float("in front of me (m)##fxv", V.dist, 0.0, 10.0, "%.1f")
+    _, V.up = imgui.slider_float("height (m)##fxv", V.up, -2.0, 4.0, "%.1f")
+    _, V.secs = imgui.slider_float("plays for (s)##fxv", V.secs, 1.0, 15.0, "%.0f")
+    _, V.loop = imgui.checkbox("repeat##fxv", V.loop)
+    imgui.same_line()
+    if imgui.button("play##fxv") then defer(function() pcall(V.play, runtime.player()) end) end
+    imgui.same_line()
+    if imgui.button("stop##fxv") then V.loop = false; defer(V.stop) end
+    imgui.same_line(); imgui.text(V.info)
+    if #e.layers <= 1 then return end
+    imgui.text(("%d layers - ticked as shipped = the real file (your Look colour); otherwise the ticked layers' copies (purple):"):format(#e.layers))
+    if imgui.button("all on##fxv") then for _, L in ipairs(e.layers) do on[L.i] = true end end
+    imgui.same_line()
+    if imgui.button("all off##fxv") then for _, L in ipairs(e.layers) do on[L.i] = false end end
+    imgui.same_line()
+    if imgui.button("as shipped##fxv") then for _, L in ipairs(e.layers) do on[L.i] = L.on end end
+    for _, L in ipairs(e.layers) do
+        local c
+        c, on[L.i] = imgui.checkbox(("%2d  %s%s##fxvl%d_%d"):format(L.i, L.name, L.on and "" or "   (hidden in ours)", V.pick, L.i), on[L.i] == true)
+        imgui.same_line()
+        if imgui.button(("solo##fxvs%d_%d"):format(V.pick, L.i)) then
+            for _, L2 in ipairs(e.layers) do on[L2.i] = (L2.i == L.i) end
+            defer(function() pcall(V.play, runtime.player()) end)
+        end
+    end
+end
+-- (user 2026-10-28, picked in the effect viewer) the slide's start effect: where I appear for the slide, at the warp
+combo.ex.SLIDE_FX = {
+    { "Afterimage aura - pulsing (ai20)", "pb_ai20_h%d" },
+    { "Afterimage aura (ai00)", "pb_ai00_h%d" },
+    { "Misty Dive takeoff - layers 11 13 14 15", "pb_sfx_sd10_h%d" },
+    { "Eldritch Bolt launch - layers 1 2 12 13 14", "pb_sfx_bl_h%d" },
+    { "Eldritch Bolt explosion - layers 11 13 65 66 (purple)", "pb_sfx_bx_h%d" },
+}
+function combo.ex.slide_efx(pos, rot)
+    local ex = combo.ex
+    local f = ex.SLIDE_FX[ex.slideEfxPick] or ex.SLIDE_FX[1]
+    local hue = (dbg.misty and dbg.misty.hue and dbg.misty.hue()) or 285
+    local path = ("vfx/effects/pactblade/%s.efx"):format(f[2]:format(hue))
+    local ok = dbg.fxv.play_file(path, Vector3f.new(pos.x, pos.y + (ex.slideEfxUp or 0), pos.z), rot, ex.slideEfxSecs or 3,
+        ex.slideEfxSize or 1, ex.slideEfxSkip or 0)
+    ex.slideEfxInfo = ok and ("played " .. path:match("([^/]+)%.efx$")) or ("not found: " .. path .. " (restart the game for the test pak)")
 end
 -- (EX) a ported-animation part, every frame: its motions in turn (cut at `to`), contact hits, then the warp on - or,
 -- if the combo stops here, the motion plays to its end (+ the recovery motion) and the combo ends
@@ -5084,6 +6339,10 @@ function combo.ex.update(a, part)
     local now = os.clock()
     local m = ex.cur
     if not m then return combo_end("EX: no motion") end
+    if ex.startFx and now >= ex.startFx then   -- (stays where the slide starts)
+        ex.startFx = nil
+        if ex.startWisps and ex.slideFx then pcall(wisps.burst, a, false) end
+    end
     if combo.target then   -- (a destroyed target: never call into it - get_GameObject on it every frame preceded a crash)
         local okV, valid = pcall(combo.target.get_Valid, combo.target)
         if not okV or not valid then combo.target = nil; ex.full = true end   -- (the motion plays out, no follow / hits)
@@ -5252,7 +6511,12 @@ pcall(function()
         function(args)
             if not live.am or sdk.to_int64(args[2]) ~= live.am then return end   -- (1.0) the player only
             if ourReq or ourReqMD or not live.on then return end
-            if combo.mPart then   -- (EX) a ported animation plays: everything but damage reactions is refused
+            local sx = combo.slash and combo.slash.ex
+            if sx and (sx.free or sx.actFree) then   -- (Slash EX: a free part) the game's own action: hand the character back
+                pcall(function() sx.handBack = sdk.to_managed_object(args[4]):ToString() end)
+                return
+            end
+            if combo.mPart or sx then   -- (EX) a ported animation plays: everything but damage reactions is refused
                 local skipM = false
                 pcall(function()
                     local name = sdk.to_managed_object(args[4]):ToString()
@@ -5379,6 +6643,21 @@ local function make_anchor(name)
     return go
 end
 
+-- (crash fix 2026-10-28) the sword's effect manager plays the wisps ON our anchors and may still update them after we
+-- let go -> wisp anchors are never destroyed: the effect killed, the anchor parked 1000 m down, reused after 3 s
+wisps.pool = {}
+function wisps.anchor(name)
+    local now = os.clock()
+    for i, e in ipairs(wisps.pool) do
+        if now - e.at > 3 then table.remove(wisps.pool, i); return e.go end
+    end
+    return make_anchor(name)
+end
+function wisps.park(go, c)
+    if c then pcall(function() c:call("killAll") end) end
+    pcall(function() local tr = go:get_Transform(); local p = tr:get_Position(); tr:set_Position(Vector3f.new(p.x, p.y - 1000, p.z)) end)
+    wisps.pool[#wisps.pool + 1] = { go = go, at = os.clock() }
+end
 -- user: use the enchanted sword's own (hidden) wisps -> the held sword's effect manager plays element 20 on our
 -- anchor (our sword-effect blocker lets it through via noxStarting); the donor sword only when there is none
 wisps.swapped = {}
@@ -5471,7 +6750,7 @@ function wisps.clear()
     for _, slot in ipairs(wisps.items) do
         for _, cp in ipairs(slot.copies or {}) do
             pcall(function() cp.c:call("killAll") end)
-            pcall(function() cp.go:call("destroy(via.GameObject)", cp.go) end)
+            wisps.park(cp.go, nil)
         end
     end
     wisps.items = {}
@@ -5486,10 +6765,10 @@ local function wisp_speed(cp, sp)
     pcall(function() cp.c:call("setPlaySpeed", sp) end)
 end
 local function wisp_copy(a, slot, goal)
-    local go = make_anchor("Pactblade_wisp")
+    local go = wisps.anchor("Pactblade_wisp")
     local cp = { go = go, t = 0, hidden = goal > 0, goal = goal }
     local ok, c = pcall(wisps.play_on, a, go)
-    if not ok or not c then pcall(function() go:call("destroy(via.GameObject)", go) end); return nil end
+    if not ok or not c then wisps.park(go, nil); return nil end
     cp.c = c
     wisp_speed(cp, goal > 0 and math.max(1.0, goal / WISP_FF) or cfg.wispSpeed)
     table.insert(slot.copies, cp)
@@ -5497,8 +6776,7 @@ local function wisp_copy(a, slot, goal)
 end
 local function wisp_kill(slot, k)
     local cp = slot.copies[k]
-    pcall(function() cp.c:call("killAll") end)
-    pcall(function() cp.go:call("destroy(via.GameObject)", cp.go) end)
+    wisps.park(cp.go, cp.c)
     table.remove(slot.copies, k)
 end
 
@@ -5613,7 +6891,7 @@ function wisps.burst(a, follow)
     for _, pt in ipairs(WISP_POINTS) do
         if cfg.wispPts[pt.key] then
             for _, j in ipairs(js[pt.key] or {}) do
-                local go = make_anchor("Pactblade_warpwisp")
+                local go = wisps.anchor("Pactblade_warpwisp")
                 local ok, c = pcall(wisps.play_on, a, go)
                 if ok and c then
                     local b = { go = go, c = c, t = 0, hidden = goal > 0, goal = goal, j = j, follow = follow, born = now,
@@ -5621,7 +6899,7 @@ function wisps.burst(a, follow)
                     wisp_speed(b, goal > 0 and math.max(1.0, goal / WISP_FF) or cfg.wispSpeed)
                     table.insert(wisps.bursts, b)
                 else
-                    pcall(function() go:call("destroy(via.GameObject)", go) end)
+                    wisps.park(go, nil)
                 end
             end
         end
@@ -5645,7 +6923,7 @@ function wisps.update_bursts(a)
             pcall(function() b.c:call("finishAll") end)
         end
         if b.ending and now - b.ending > 2 then
-            pcall(function() b.go:call("destroy(via.GameObject)", b.go) end)
+            wisps.park(b.go, b.c)
             table.remove(wisps.bursts, k)
         else
             pcall(function()
@@ -5689,9 +6967,11 @@ end)
 local SLASH = { action = "Job05_CrescentSlashNormal", to = 97, shell = 6, stamina = 160, range = 8 }   -- (4.01 user: 160)
 local slash = { on = false, lastPress = -10, waves = {}, rangeBase = {} }
 combo.slash = slash
+combo.request = function(a, name) return combo_request(a, name) end
 local function slash_end(why)
     if slash.on then note("Eldritch Slash ended: " .. why) end
     slash.on = false
+    if slash.ex then slash.ex = nil; pcall(combo.ex.fsm, nil, false) end   -- (EX: the game's motion control back)
     if slash.fast then
         slash.fast = false
         pcall(function() local a = runtime.player(); if a then a:set_speed(nil) end end)
@@ -5701,6 +6981,7 @@ local function slash_end(why)
         pcall(function() local a = runtime.player(); if a then a:set_super_armor(false) end end)
     end
 end
+combo.slash_end = slash_end
 local function slash_lifetime()
     if SLASH.baseDur then return SLASH.baseDur * 5 end   -- 5x as far (user)
     note("Eldritch Slash: wave flight time not measured yet - normal distance this time")
@@ -5727,6 +7008,7 @@ local function slash_pick_target(a, range, cone, gap)
     for i = 0, list._size - 1 do
         pcall(function()
             local ch = list._items[i]._Chara
+            if not dbg.valid(ch) then return end   -- (crash hunt: never into a destroyed enemy)
             if not is_alive(ch) then return end
             local q = ch:get_GameObject():get_Transform():get_Position()
             local dx, dz, d = flat_dir(q.x - p.x, q.z - p.z)
@@ -5773,10 +7055,12 @@ function combo.turn_to(a, t, dt, speed)
 end
 local function slash_update(a)
     local now = os.clock()
+    if slash.ex then return combo.slx.update(a, now) end   -- (EX playing)
     if slash.want then
         slash.want = false
+        if not slash.on and combo.stage == 0 and combo.slx and combo.slx.active() and combo.slx.start(a, now) then return end
         if not slash.on and combo.stage == 0 then
-            pcall(a.consume_stamina, a, SLASH.stamina)
+            pcall(a.consume_stamina, a, SLASH.stamina + 0.0)   -- (float: an integer arrives as NaN = a full bar)
             slash.on, slash.asked, slash.started, slash.fired = true, now, nil, false
             pcall(function() a:set_super_armor(true); slash.armor = true end)
             pcall(function() slash.prevMot = motion_key(a.character.FullBodyLayer) end)
@@ -5817,6 +7101,13 @@ local function slash_update(a)
     end
     if not slash.fired and fr >= cfg.slashFrame then
         slash.fired = true
+        slash.fire_wave(a, fr)
+    end
+    -- (no cut at SLASH.to: the recovery after it plays out, sped up from cfg.slashFastFrom; ends with the animation)
+end
+-- the wave (Magike Cut's shell) from the sword side; roll = degrees around its flight direction (Slash EX: sideways)
+function slash.fire_wave(a, fr, roll)
+    do
         dbg.slashT = os.clock()
         local skel = false   -- (1.66 Skeleton Lord wave: only dust + a shockwave without its own effect files)
         local res, err = spawn(a, {
@@ -5837,9 +7128,281 @@ local function slash_update(a)
                 colour_shell(res.record, { math.min(1, cfg.armR / 255 * k), math.min(1, cfg.armG / 255 * k), math.min(1, cfg.armB / 255 * k), 1 }, 6.0)
             end
         else note("Eldritch Slash: wave failed: " .. tostring(err)) end
+        if res and res.record and roll and roll ~= 0 then   -- (its shell shows up in the record a frame or more later)
+            local h = math.rad(roll) / 2
+            slash.rollJobs = slash.rollJobs or {}
+            table.insert(slash.rollJobs, { record = res.record, rq = Quaternion.new(math.cos(h), 0, 0, math.sin(h)), base = {},
+                                           untilT = os.clock() + 3, roll = roll })
+        end
     end
-    -- (no cut at SLASH.to: the recovery after it plays out, sped up from cfg.slashFastFrom; ends with the animation)
 end
+-- (Slash EX) the wave roll, every frame while it flies: its first-seen rotation * the roll around its flight axis (Z)
+re.on_pre_application_entry("LateUpdateBehavior", function()
+    local jobs = slash.rollJobs
+    if not jobs or #jobs == 0 then return end
+    local now = os.clock()
+    for i = #jobs, 1, -1 do
+        local j = jobs[i]
+        if now > j.untilT then table.remove(jobs, i)
+        else
+            for k, part in ipairs(j.record.parts or {}) do
+                pcall(function()
+                    if part.shell:call("get_Valid") == false then return end
+                    local tr = part.shell:get_GameObject():get_Transform()
+                    if not j.base[k] then
+                        j.base[k] = tr:get_Rotation()
+                        if not j.noted then j.noted = true; note(("Eldritch Slash EX: wave rolled %.0f deg"):format(j.roll)) end
+                    end
+                    tr:set_Rotation(j.base[k] * j.rq)
+                end)
+            end
+        end
+    end
+end)
+-- (user 2026-10-30) ELDRITCH SLASH EX: Onimusha Skill_121 (real sword hitboxes inside the motion), the 1st wave at
+-- slxWave1, slowed slxSlowFrom-slxSlowTo (the window), a 2nd press = on into the 2nd slash (its wave at slxWave2),
+-- else back to idle at slxSlowTo
+;(function()
+    local slx = {}
+    combo.slx = slx
+    function slx.active()
+        local m = combo.ex.mode_of("slxMode")
+        if m == "on" then return true elseif m ~= "auto" then return false end
+        local now = os.clock()   -- (auto: the sword has Plenilune Slash = EX ability 2 + Eldritch Slash level 2; 2x a second)
+        if slx.actT and now - slx.actT < 0.5 then return slx.act end
+        slx.actT = now
+        slx.act = combo.ex.has_ability(2) and (not combo.ex.needLv2 or combo.ex.level_of("slash") >= 2)
+        return slx.act
+    end
+    function slx.spend(a, cost, what, quiet)   -- (user: every slash costs what the normal Eldritch Slash costs); true = it dropped
+        local ok = false
+        pcall(function()
+            local smg = a.character:get_StaminaManager()
+            local before = a:stamina()
+            smg:add(-(cost + 0.0), true)   -- (float: an integer arrives as NaN = a full bar)
+            local after = a:stamina()
+            ok = before and after and before - after >= cost * 0.5
+            if ok or not quiet then note(("Eldritch Slash EX: %s - stamina %.0f -> %.0f%s"):format(what, before or -1, after or -1, ok and "" or " (didn't take)")) end
+        end)
+        return ok
+    end
+    function slx.start(a, now)
+        local ex = combo.ex
+        local okR, rdy = pcall(combo.ex.ready, a, { "slashex", 0 })
+        if not (okR and rdy) then note("Eldritch Slash EX: its animation isn't loaded (pak x0035?) - the normal slash"); return false end
+        -- (the 1st slash's cost: from the motion's 3rd frame - in the press's frame it was undone)
+        combo.ex.fsm(a, true)
+        local L = a.character:get_Motion():getLayer(0)
+        slx.prev = { L:call("get_MotionBankID"), L:call("get_MotionID") }   -- (the hand-back returns to it)
+        L:call(combo.ex.CHANGE, combo.ex.banks.slashex.bank, 0, 0.0, ex.slxBlend or 4, 1, 1)
+        L:call("set_Speed", 1.0)
+        pcall(function() a:set_super_armor(true); slash.armor = true end)
+        slash.on, slash.asked, slash.started, slash.fired = true, now, now, false
+        slash.ex = { t0 = now, n = 0, w1 = false, w2 = false, cont = false, decided = false, press = nil, lastT = now,
+                     act0 = tostring(a:current_action(0) or "") }   -- (another action from this one = cancelled)
+        slash.target = nil
+        if cfg.slashTurn then
+            local ok, t, d = pcall(combo.pick_target, a)
+            if ok and t then slash.target = t:add_ref(); note(("Eldritch Slash EX: turning to an enemy %.1f m away"):format(d)) end
+        end
+        note("Eldritch Slash EX")
+        return true
+    end
+    local function back_to_game(a, why, noIdle)
+        pcall(function()   -- (user: a step on its own afterwards) the game's stored facing = the way I face now
+            local q = a.character:get_GameObject():get_Transform():get_Rotation()
+            local f = q * Vector3f.new(0, 0, 1)
+            local deg = math.deg(math.atan(f.x, f.z))
+            local tac = a.character["<TargetAngleCtrl>k__BackingField"]
+            local old
+            pcall(function() old = tac.Front["<AngleDeg>k__BackingField"] end)
+            dbg.set_facing_deg(tac, deg)
+            if old then note(("Eldritch Slash EX: facing %.0f deg (the game had %.0f)"):format(deg, old)) end
+        end)
+        pcall(combo.ex.fsm, a, false)
+        if not noIdle then
+            pcall(combo.request, a, "NormalLocomotion")
+            pcall(function()   -- (already in NormalLocomotion: nothing changed the layer) back to the motion at the press
+                local L = a.character:get_Motion():getLayer(0)
+                local b = L:call("get_MotionBankID")
+                local to = slx.idle or slx.prev   -- (user: steps forward after the twirl - the press motion was a walk)
+                if (b == combo.ex.banks.slashex.bank or b == combo.ex.banks.issen.bank) and to then
+                    L:call(combo.ex.CHANGE, to[1], to[2], 0.0, combo.ex.slxBackBlend or 8, 1, 1)
+                    L:call("set_Speed", 1.0)
+                    note(("Eldritch Slash EX: back to %s motion %d/%d"):format(slx.idle and "the idle" or "the press", to[1], to[2]))
+                end
+            end)
+        end
+        combo.slash_end(why)
+    end
+    local HURT = { "^Dmg", "Caught", "Down", "Blown", "Slam", "Die", "Dead", "Stagger", "Grab" }
+    -- (user) in a free part: an action the game requested (handBack) or another current action = the player's choice
+    local function other_action(a, X)
+        if X.handBack then return X.handBack end
+        local cur = tostring(a:current_action(0) or "")
+        if cur ~= X.act0 and cur ~= "" then return cur end
+    end
+    -- (user) no 2nd press: Onimusha Issen_408 as the recovery; free from slxFree on
+    local function rec_update(a, now, X, L)
+        local ex = combo.ex
+        local bank = combo.ex.banks.issen.bank
+        if not X.recOn then
+            local okR, rdy = pcall(combo.ex.ready, a, { "issen", 59 })
+            if not (okR and rdy) then return back_to_game(a, "no 2nd press (Issen_408 not loaded) - back to idle") end
+            L:call(combo.ex.CHANGE, bank, 59, ex.slxRecFrom or 0, ex.slxRecBlend or 6, 1, 1)
+            L:call("set_Speed", 1.0)
+            X.recOn, X.recN, X.press = true, 0, nil
+            note("Eldritch Slash EX: no 2nd press - Issen_408")
+            return
+        end
+        X.recN = X.recN + 1
+        if L:call("get_MotionBankID") ~= bank or L:call("get_MotionID") ~= 59 then
+            if X.recN > 3 then return back_to_game(a, "recovery interrupted") end
+            return
+        end
+        local fr, endF = L:call("get_Frame") or 0, L:call("get_EndFrame") or 170
+        if not X.free and fr >= (ex.slxFree or 75) then X.free = true; note(("Eldritch Slash EX: free from frame %.0f"):format(fr)) end
+        if X.free then
+            if X.handBack then return back_to_game(a, "recovery: " .. X.handBack, true) end
+            if X.press then slash.want = true; return back_to_game(a, "recovery: Eldritch Slash again", true) end
+            local moving = false
+            pcall(function() moving = a.input:call("isLeverInputL") == true end)
+            if moving then return back_to_game(a, "recovery: moving") end
+        end
+        if fr >= endF - 1 then return back_to_game(a, "recovery done") end
+    end
+    function slx.update(a, now)
+        local ex, X = combo.ex, slash.ex
+        local L = a.character:get_Motion():getLayer(0)
+        X.n = X.n + 1
+        if not X.recOn and (L:call("get_MotionBankID") ~= combo.ex.banks.slashex.bank or L:call("get_MotionID") ~= 0) then
+            if X.n > 3 then return back_to_game(a, "EX interrupted (layer: bank " .. tostring(L:call("get_MotionBankID")) .. ")") end
+            return
+        end
+        local hurt = false
+        pcall(function()
+            local cur = tostring(a:current_action(0) or "")
+            for _, pat in ipairs(HURT) do if cur:find(pat) then hurt = cur end end
+        end)
+        if hurt then return back_to_game(a, "hit: " .. hurt, true) end
+        if X.recOn or X.recWant then X.recWant = nil; return rec_update(a, now, X, L) end
+        if not X.paid and X.n >= 3 then   -- (user: only the 2nd hit took stamina) every frame until it takes, 1.5 s at most
+            X.payTries = (X.payTries or 0) + 1
+            if slx.spend(a, SLASH.stamina, ("1st slash (try %d, %.2f s after the press)"):format(X.payTries, now - X.t0), true) then X.paid = true
+            elseif now - X.t0 > 1.5 then X.paid = true; note(("Eldritch Slash EX: 1st slash's stamina never took (%d tries)"):format(X.payTries)) end
+        end
+        local fr = L:call("get_Frame") or 0
+        local dt = math.min(0.1, now - X.lastT); X.lastT = now
+        local w1, w2 = ex.slxWave1 or 21, ex.slxWave2 or 61
+        if slash.target and ((not X.w1 and fr < w1) or (X.cont and not X.w2 and fr < w2)) then
+            pcall(combo.turn_to, a, slash.target, dt, cfg.slashTurnSpeed)
+        end
+        if not X.w1 and fr >= w1 then X.w1 = true; slash.fired = true; slash.fire_wave(a, fr, ex.slxRoll1 or 0) end
+        if not X.decided then
+            local pressed = X.press and X.w1
+            if pressed then
+                X.decided, X.cont, X.actFree, X.handBack = true, true, false, nil
+                L:call("set_Speed", 1.0)
+                slx.spend(a, SLASH.stamina + (ex.slxStamina2 or 0), "2nd slash")
+                note(("Eldritch Slash EX: 2nd press at frame %.1f - the 2nd slash"):format(fr))
+            elseif fr >= (ex.slxSlowTo or 28) then
+                X.decided = true
+                if ex.slxRec ~= false then return rec_update(a, now, X, L) end
+                return back_to_game(a, "no 2nd press - back to idle")
+            elseif fr >= (ex.slxSlowFrom or 25) then   -- (user: the slow part as long as the input window)
+                if not X.actFree and fr >= (ex.slxActFrom or 27) then X.actFree = true end   -- (actions cancel from here)
+                local span = math.max(0.5, (ex.slxSlowTo or 28) - (ex.slxSlowFrom or 25))
+                L:call("set_Speed", math.max(0.01, span / (60 * math.max(0.05, ex.slxWindow or 0.8))))
+            end
+        end
+        if X.actFree and not X.decided then   -- (the window's last frames: an attack / dodge / skill takes over)
+            local o = other_action(a, X)
+            if o then return back_to_game(a, "window: " .. o, true) end
+        end
+        if X.cont and not X.w2 and fr >= w2 then X.w2 = true; slash.fire_wave(a, fr, ex.slxRoll2 or 90) end
+        if X.cont and fr >= (ex.slxFree2 or 92) then   -- (user: keep the sword twirl) free from here, played to its end
+            if not X.free then X.free, X.press, X.handBack = true, nil, nil; note(("Eldritch Slash EX: free from frame %.0f (the twirl plays on)"):format(fr)) end
+            local o = other_action(a, X)
+            if o then return back_to_game(a, "twirl cancelled: " .. o, true) end
+            if X.press then slash.want = true; return back_to_game(a, "twirl cancelled: Eldritch Slash again", true) end
+            local moving = false
+            pcall(function() moving = a.input:call("isLeverInputL") == true end)
+            if moving then return back_to_game(a, "twirl cancelled: moving") end
+            if fr >= (L:call("get_EndFrame") or 283) - 1 then return back_to_game(a, "done") end
+        end
+        if now - X.t0 > 8 then return back_to_game(a, "timed out") end
+    end
+    -- the standing idle motion: learned while I stand still (NormalLocomotion, stick at rest, not moving), 2x a second
+    re.on_pre_application_entry("UpdateBehavior", function()
+        local now = os.clock()
+        if slash.ex or now < (slx.idleT or 0) then return end
+        slx.idleT = now + 0.5
+        pcall(function()
+            local a = runtime.player()
+            if not a or not a:valid() or a:current_action(0) ~= "NormalLocomotion" then return end
+            if a.input:call("isLeverInputL") then return end
+            local v = a.character:call("get_FrameSpeedVector")
+            if v and (v.x * v.x + v.z * v.z) > 0.0001 then return end
+            local L = a.character:get_Motion():getLayer(0)
+            local b, id = L:call("get_MotionBankID"), L:call("get_MotionID")
+            if b == combo.ex.banks.slashex.bank or b == combo.ex.banks.issen.bank then return end
+            slx.idleSeen = slx.idleSeen or {}
+            local k = b .. "/" .. id
+            slx.idleSeen[k] = (slx.idleSeen[k] or 0) + 1
+            if slx.idleSeen[k] >= 3 and not (slx.idle and slx.idle[1] == b and slx.idle[2] == id) then   -- (seen 1.5 s still)
+                slx.idle = { b, id }
+            end
+        end)
+    end)
+    -- (user: no attack / skill / jump in the free parts) the input permissions the motion's PlayerTrack would give
+    local ACTS = { "NormalAttack", "ComboAttack", "Skill", "Evasion", "Jump", "Cancel", "Catch", "SpecialCancel", "DashCancel" }
+    function slx.track_apply()
+        local X = slash.ex
+        if not X or not (X.free or X.actFree) then return end
+        pcall(function()
+            local tr = runtime.player().character:get_Human().Track
+            for _, f in ipairs(ACTS) do tr[f] = true end
+            if X.free then tr.All = true; tr.Move = true end
+            if not X.trackNoted then X.trackNoted = true; note("Eldritch Slash EX: input allowed (" .. (X.free and "everything" or "actions, not moving") .. ")") end
+        end)
+    end
+    re.on_pre_application_entry("UpdateBehavior", slx.track_apply)
+    re.on_application_entry("UpdateBehavior", slx.track_apply)
+    re.on_pre_application_entry("LateUpdateBehavior", slx.track_apply)
+    re.on_application_entry("LateUpdateBehavior", slx.track_apply)
+    function slx.menu()
+        local ex = combo.ex
+        local _
+        local MODES = { "auto", "on", "off" }
+        local chm, nv = imgui.combo("Slash EX##slx", ({ auto = 1, on = 2, off = 3 })[ex.slxMode or "on"] or 2,
+            { "auto (the sword has Plenilune Slash + Eldritch Slash level 2)", "always on (test)", "off (the normal Eldritch Slash)" })
+        if chm then ex.slxMode = MODES[nv]; ex.saveAt = os.clock() + 0.5 end
+        imgui.text(("sword has Plenilune Slash: %s  -  Eldritch Slash level %d  -  Slash EX is %s"):format(
+            ex.status.plen and "YES" or "no", ex.status.lvSlash or 0, ex.status.slxOn and "ON" or "off"))
+        local ch = {}
+        ch[1], ex.slxWave1 = imgui.slider_float("1st wave (vertical) at frame##slx", ex.slxWave1, 0, 60, "%.0f")
+        ch[2], ex.slxSlowFrom = imgui.slider_float("slow window from frame##slx", ex.slxSlowFrom, 0, 60, "%.0f")
+        ch[3], ex.slxSlowTo = imgui.slider_float("slow window to frame (no 2nd press: back to idle here)##slx", ex.slxSlowTo, 0, 60, "%.0f")
+        ch[4], ex.slxWindow = imgui.slider_float("2nd press window: the slow part lasts (s)##slx", ex.slxWindow, 0.1, 2.0, "%.2f")
+        ch[5], ex.slxWave2 = imgui.slider_float("2nd wave (horizontal) at frame##slx", ex.slxWave2, 30, 140, "%.0f")
+        ch[6], ex.slxFree2 = imgui.slider_float("after the 2nd slash: free to move / attack from frame (the twirl plays on)##slx", ex.slxFree2, 62, 283, "%.0f")
+        ch[7], ex.slxRoll1 = imgui.slider_float("1st wave roll (deg)##slx", ex.slxRoll1, -180, 180, "%.0f")
+        ch[8], ex.slxRoll2 = imgui.slider_float("2nd wave roll (deg; 90 = lying flat)##slx", ex.slxRoll2, -180, 180, "%.0f")
+        ch[9], ex.slxStamina2 = imgui.slider_float("2nd slash: extra stamina on top of the normal cost##slx", ex.slxStamina2, 0, 400, "%.0f")
+        ch[10], ex.slxBlend = imgui.slider_float("blend into the animation (frames)##slx", ex.slxBlend, 0, 12, "%.0f")
+        ch[11], ex.slxRec = imgui.checkbox("no 2nd press: Issen_408 as the recovery (off = straight back to idle)##slx", ex.slxRec ~= false)
+        ch[12], ex.slxRecFrom = imgui.slider_float("   Issen_408 starts at its frame##slx", ex.slxRecFrom, 0, 100, "%.0f")
+        ch[13], ex.slxRecBlend = imgui.slider_float("   blend into it (frames)##slx", ex.slxRecBlend, 0, 20, "%.0f")
+        ch[14], ex.slxFree = imgui.slider_float("   free to move / attack from its frame##slx", ex.slxFree, 0, 170, "%.0f")
+        ch[16], ex.slxActFrom = imgui.slider_float("window: attacks / dodges (not moving) cancel from frame##slx", ex.slxActFrom, 21, 40, "%.1f")
+        ch[15], ex.slxBackBlend = imgui.slider_float("back to idle: blend (frames)##slx", ex.slxBackBlend, 0, 20, "%.0f")
+        for i = 1, 16 do if ch[i] then ex.saveAt = os.clock() + 0.5 end end
+        if ex.saveAt and os.clock() >= ex.saveAt then ex.saveAt = nil; pcall(ex.save) end
+        imgui.text("Hitboxes are inside the animation: 1st slash 1101 (light) f17-27, 2nd slash 1110 (heavy) f58-70.")
+        local X = slash.ex
+        imgui.text(X and ("playing: wave1 %s, 2nd press %s, 2nd slash %s"):format(tostring(X.w1), tostring(X.press ~= nil), tostring(X.cont)) or "-")
+    end
+end)()
 -- the wave's own built-in effect (the shell's ShellEffectContainer) in the slash colour, every frame while it flies
 local function wave_meshes(rec)
     local out = {}
@@ -6048,6 +7611,10 @@ pcall(function()
         local id = sdk.to_int64(args[3]) & 0xFFFFFFFF
         if id ~= HINDSIGHT_ID then return end
         local now = os.clock()
+        if slash.on and slash.ex and not slash.ex.press then   -- (Slash EX: the 2nd press / in the free recovery: again)
+            slash.ex.press = now
+            note(slash.ex.recOn and "Eldritch Slash EX: pressed during the recovery" or "Eldritch Slash EX: 2nd press seen")
+        end
         if not slash.on and combo.stage == 0 and now - slash.lastPress > 0.6 then
             local can = false
             pcall(function()
@@ -8183,6 +9750,25 @@ re.on_frame(function()
         r.on = false
         pcall(json.dump_file, "Pactblade_chant_record.json", r.list)
         r.info = ("done: %d entries -> data/Pactblade_chant_record.json"):format(#r.list)
+        pcall(function()   -- (user: several skills in a row) the history: actions + the effects seen (unique, with their set)
+            local acts, fx, seen = {}, {}, {}
+            for _, e in ipairs(r.list) do
+                if e.action and e.action ~= "NormalLocomotion" and e.action ~= "Strafe" then
+                    local dup = false
+                    for _, x in ipairs(acts) do if x == e.action then dup = true end end
+                    if not dup then acts[#acts + 1] = e.action end
+                end
+                local idd = e.effect and tostring(e.effect)
+                if idd and idd:match("^%d+/%d+/%d+$") and e.set and not e.obj and not seen[idd] then
+                    seen[idd] = true
+                    fx[#fx + 1] = { id = idd, set = e.set }
+                end
+            end
+            r.history = r.history or {}
+            table.insert(r.history, 1, { when = os.date("%H:%M:%S"), actions = table.concat(acts, ", "), fx = fx })
+            while #r.history > 10 do table.remove(r.history) end
+            json.dump_file("Pactblade_rec_history.json", r.history)
+        end)
     else
         r.info = ("recording... %.1f s left (%d entries)"):format(r.secs - (os.clock() - r.t0), #r.list)
     end
@@ -8560,9 +10146,32 @@ local function sound_set()
     end
     return sk.soundSet or nil
 end
+-- (Caustic Brew EX) the game's fire sound sets, loaded into the same sound objects (their triggers: FIRE_SNDS)
+sk.FIRE_SETS = { "sound/resource/em/em_com/em_com_fx/em_com_fx_firearea_containerlistdata.user",
+                 "sound/resource/common/burngrass/burngrass_containerlistdata.user",
+                 "sound/resource/environment/epv/fire/env_epv_fire_containerlistdata.user" }
+sk.FIRE_SNDS = { { 0, "none" }, { 61797333, "fire area 1" }, { 1814127035, "fire area 2" }, { 3520342338, "grass fire 1 (30 m)" },
+                 { 4169246058, "grass fire 2" }, { 1957399756, "fire (env) 1" }, { 3789435712, "fire (env) 2" }, { 2642685780, "fire (env) 3" } }
+local function fire_sets()
+    if sk.fireSets == nil then
+        sk.fireSets = {}
+        for _, path in ipairs(sk.FIRE_SETS) do
+            local ok, ud = pcall(sdk.create_userdata, "soundlib.SoundContainerListData", path)
+            if ok and ud then sk.fireSets[#sk.fireSets + 1] = ud:add_ref() end
+        end
+        note(("Caustic Brew EX: %d of %d fire sound sets found"):format(#sk.fireSets, #sk.FIRE_SETS))
+    end
+    return sk.fireSets
+end
+local function fire_pool_clear()   -- (Brew EX) the fire's own sound objects: gone = their sounds stop
+    for _, e in ipairs(sk.firePool or {}) do local o = e.go; pcall(function() o:call("destroy(via.GameObject)", o) end) end
+    sk.firePool, sk.fireKillAt = {}, nil
+end
+sk.fire_pool_clear = fire_pool_clear
 local function pool_clear()
     for _, e in ipairs(sk.pool) do local o = e.go; pcall(function() o:call("destroy(via.GameObject)", o) end) end
     sk.pool, sk.poolNext = {}, 1
+    fire_pool_clear()
 end
 -- the set into my own container (once per character) and 8 fresh sound objects of ours, one per splash (made anew for every cast:
 -- nothing old is touched after a scene change)
@@ -8574,6 +10183,7 @@ function sk.prepare_sounds(a)
         for _, c in ipairs(go:call("get_Components"):get_elements()) do
             if c:get_type_definition():get_full_name() == "app.WwiseContainerApp" then
                 c:call("loadContainableUserData", set)
+                for _, fs in ipairs(fire_sets()) do pcall(c.call, c, "loadContainableUserData", fs) end   -- (Brew EX)
                 sk.soundsFor = go:get_address()
                 break
             end
@@ -8588,7 +10198,24 @@ function sk.prepare_sounds(a)
         local c = o:call("createComponent(System.Type)", sdk.typeof("app.WwiseContainerApp")):add_ref()
         pcall(function() c._UserDataList:call("Add", set) end)
         pcall(c.call, c, "loadContainableUserData", set)
+        for _, fs in ipairs(fire_sets()) do   -- (Brew EX: the fire's sounds)
+            pcall(function() c._UserDataList:call("Add", fs) end)
+            pcall(c.call, c, "loadContainableUserData", fs)
+        end
         sk.pool[k] = { go = o, c = c }
+    end
+    if combo.ex.bw_active() then   -- (Brew EX) 4 sound objects only for the fire (ignition 1, burning 2-4)
+        for k = 1, 4 do
+            local o = make_anchor()
+            o:set_Name("Pactblade_firesound")
+            o:get_Transform():set_Position(at)
+            local c = o:call("createComponent(System.Type)", sdk.typeof("app.WwiseContainerApp")):add_ref()
+            for _, fs in ipairs(fire_sets()) do
+                pcall(function() c._UserDataList:call("Add", fs) end)
+                pcall(c.call, c, "loadContainableUserData", fs)
+            end
+            sk.firePool[k] = { go = o, c = c }
+        end
     end
 end
 -- one sound of the set at a spot: the next sound object goes there and plays it (else from my own container)
@@ -8659,6 +10286,25 @@ end
 local APPLY_STATUS = "reqStatusConditionApplyCore(app.StatusConditionDef.StatusConditionEnum, app.HitController.DamageInfo, app.StatusConditionDef.RequestInfo, System.Boolean)"
 -- the damage: enemies in the acid's strip (from 1 m ahead to where the wave has got, sk.halfWidth to each side,
 -- 2.5 m up / down) take sk.tickDmg and sk.poisonPts on their poison meter - called every sk.tickSecs while the acid lies
+-- (user: the effect's area, up to 1.5 m high) the enemy's BODY in the strip S (pos, fx, fz): its capsule (radius
+-- sideways, height up from its feet) overlapping the strip's volume; the along-position nearest the strip's start / end
+sk.stripHigh = 1.5
+function sk.body_in_strip(ch, S, reach)
+    local feet = ch:get_GameObject():get_Transform():get_Position()
+    local r, h = 0.4, 1.7
+    pcall(function()
+        local cc = ch["<CharaController>k__BackingField"]
+        local rr, hh = cc:call("get_Radius"), cc:call("get_Height")
+        if type(rr) == "number" and rr > 0 and rr < 8 then r = rr end
+        if type(hh) == "number" and hh > 0 and hh < 20 then h = hh end
+    end)
+    if feet.y > S.pos.y + (sk.stripHigh or 1.5) or feet.y + h < S.pos.y - 0.5 then return nil end   -- (not in its height)
+    local dx, dz = feet.x - S.pos.x, feet.z - S.pos.z
+    local along, side = dx * S.fx + dz * S.fz, math.abs(dx * S.fz - dz * S.fx)
+    local a0 = sk.ahead - 1.0
+    if along < a0 - r or along > reach + r or side > sk.halfWidth + r then return nil end
+    return math.max(a0, math.min(reach, along)), r
+end
 function sk.tick(a)
     local ar = sk.area
     local reach = math.min(sk.ahead + 7 * 1.9 + 1.0, sk.ahead + (os.clock() - ar.t0) / 0.07 * 1.9 + 1.0)   -- the wave's front
@@ -8668,12 +10314,10 @@ function sk.tick(a)
     for k = 0, list._size - 1 do
         pcall(function()
             local ch = list._items[k] and list._items[k]._Chara
+            if not dbg.valid(ch) then return end   -- (crash hunt: never into a destroyed enemy)
             local hit = ch and ch["<Hit>k__BackingField"]
             if not hit or hit:get_Hp() <= 0 then return end
-            local p = (ch.Hip or ch["<Transform>k__BackingField"]):get_Position()
-            local dx, dz = p.x - ar.pos.x, p.z - ar.pos.z
-            local along, side = dx * ar.fx + dz * ar.fz, math.abs(dx * ar.fz - dz * ar.fx)
-            if along < sk.ahead - 1.0 or along > reach or side > sk.halfWidth or math.abs(p.y - ar.pos.y) > 2.5 then return end
+            if not sk.body_in_strip(ch, ar, reach) then return end   -- (user: its body in the effect's area, 1.5 m high)
             local info = sdk.create_instance("app.HitController.DamageInfo"):add_ref()
             info.Damage = sk.tickDmg
             if sk.stagger and not ar.staggered[ch:get_address()] then   -- (test) one flinch per enemy
@@ -8714,7 +10358,193 @@ function sk.release(a)
     sk.info = "acid out"
     sk.wave = { pos = pos, rot = Quaternion.new(math.cos(yaw / 2), 0, math.sin(yaw / 2), 0), fx = fx, fz = fz, t0 = os.clock(), n = 0 }
     sk.stage, sk.t0 = "pour", os.clock()
+    if combo.ex.bw_active() then   -- (EX) the strip ignites bwDelay s after the 8th splash (0.07 s apart)
+        if dbg.slots and not dbg.slots.use() then   -- (user: the EX version needs and uses a spell slot)
+            dbg.slots.deny()
+            note("Caustic Brew EX: no spell slot free - the acid only")
+        else
+            sk.ignite = { pos = pos, fx = fx, fz = fz, rot = sk.wave.rot, at = os.clock() + 7 * 0.07 + (combo.ex.bwDelay or 0.5) }
+            note(("Caustic Brew EX: a spell slot used - the acid ignites in %.1f s"):format(sk.ignite.at - os.clock()))
+        end
+    end
 end
+-- (user 2026-10-30) CAUSTIC BREW EX: the acid's strip on fire - the game's grass fire on the splash spots, fire hits +
+-- a burn meter (100 = the game's burning, status 5) for bwSecs
+local fireRes, fireLive = {}, {}
+local function fire_at(pos, rot, dieAt)
+    local ex = combo.ex
+    local file = ("vfx/effects/environment/common/grass_burn/13_env_grassburn_%02d.efx"):format(math.min(2, math.floor(ex.bwFx or 0)))   -- (03 is empty)
+    if fireRes[file] == nil then
+        local r = sdk.create_resource("via.effect.EffectResource", file)
+        fireRes[file] = r and r:add_ref() or false
+    end
+    if not fireRes[file] then sk.info = "fire effect not found: " .. file; return nil end
+    local go = make_anchor()
+    go:set_Name("Pactblade_brewfire")
+    local tr = go:get_Transform()
+    tr:set_Position(pos)
+    tr:set_Rotation(rot)
+    local sz = ex.bwFxSize or 1.0
+    pcall(function() tr:set_LocalScale(Vector3f.new(sz, sz, sz)) end)
+    local ep = go:call("createComponent(System.Type)", sdk.typeof("via.effect.EffectPlayer")):add_ref()
+    ep:call("set_Resource", fireRes[file]:create_holder("via.effect.EffectResourceHolder"):add_ref())
+    pcall(function() ep:call("set_AutoStart", true) end)
+    table.insert(fireLive, { go = go, dieAt = dieAt or (os.clock() + (ex.bwSecs or 3) + 0.4) })
+    return go
+end
+sk.burnMeters, sk.burnQ = {}, {}
+function sk.fire_sound(id, pos, what, k)   -- k = which of our sound objects (a loop is stopped on the SAME one)
+    if not id or id == 0 then return end
+    id = math.tointeger(id) or id
+    local r = "no sound objects yet"
+    pcall(function()
+        local e = (sk.firePool or {})[k or 1] or sk.pool[5]   -- (the test button before any cast: a splash object)
+        if not e then return end
+        local info = find_info(e.c, id)
+        if not info then r = "not in the loaded sets"; return end
+        if pos then e.go:get_Transform():set_Position(pos) end
+        r = request_play(e.c, info, e.go)
+    end)
+    if not sk.fireSndNoted or what == "test" then note(("Caustic Brew EX: %s sound %d - %s"):format(what, id, tostring(r))) end
+    if what ~= "test" then sk.fireSndNoted = true end
+end
+function sk.fire_tick(a)
+    local F = sk.fire
+    local reach = sk.ahead + 7 * 1.9 + 1.0
+    local list = sdk.get_managed_singleton("app.EnemyManager")._EnemyList
+    local hm = sdk.get_managed_singleton("app.HitManager")
+    local me, myHit = a.character:get_GameObject(), a.character["<Hit>k__BackingField"]
+    for k = 0, list._size - 1 do
+        pcall(function()
+            local ch = list._items[k] and list._items[k]._Chara
+            if not dbg.valid(ch) then return end
+            local hit = ch and ch["<Hit>k__BackingField"]
+            if not hit or hit:get_Hp() <= 0 then return end
+            local along, rad = sk.body_in_strip(ch, F, reach)   -- (user: its body in the fire's area, 1.5 m high)
+            if not along then return end
+            local function seg_of(x) return math.max(1, math.min(8, math.floor((x - (sk.ahead - 0.95)) / 1.9) + 1)) end
+            local seg, now2 = nil, os.clock()   -- (a big body over several patches: any lit one under it burns)
+            for sg = seg_of(along - rad), seg_of(along + rad) do
+                if not seg and (not F.segStart or now2 >= F.segStart[sg]) and (not F.segEnd or now2 <= F.segEnd[sg]) then seg = sg end
+            end
+            if not seg then return end
+            if F.segEnd and os.clock() > F.segEnd[seg] then return end   -- (its patch is already out)
+            if F.segStart and os.clock() < F.segStart[seg] then return end   -- (not burning yet)
+            local info = sdk.create_instance("app.HitController.DamageInfo"):add_ref()
+            info.Damage = (combo.ex.bwDmg or 120) + 0.0
+            pcall(function() info.IsMagicAttack = true; info.MagicDamage = (combo.ex.bwDmg or 120) + 0.0 end)
+            pcall(function()   -- (RE) the hit's element: Fire (AttackUserData.ElementType 1) in the Nullable
+                local nv = info:get_field("OverwriteElementType")
+                nv:set_field("_Value", 1); nv:set_field("_HasValue", true)
+                info:set_field("OverwriteElementType", nv)
+                if not sk.elemNoted then
+                    sk.elemNoted = true
+                    local back = info:get_field("OverwriteElementType")
+                    note(("Caustic Brew EX: fire element on the hits - read back hasValue %s, value %s"):format(tostring(back:get_field("_HasValue")), tostring(back:get_field("_Value"))))
+                end
+            end)
+            pcall(function()   -- (RE) its burn resistance, noted once per enemy (what the number means: to be seen)
+                sk.resNoted = sk.resNoted or {}
+                if sk.resNoted[ch:get_address()] then return end
+                sk.resNoted[ch:get_address()] = true
+                local r = ch["<StatusConditionCtrl>k__BackingField"]:call("getStatusConditionResistance(app.StatusConditionDef.StatusConditionEnum)", 5)
+                note(("Caustic Brew EX: %s burn resistance %s"):format(tostring(ch:get_GameObject():get_Name()), tostring(r)))
+            end)
+            local ok = pcall(hm.call, hm, "directDamage", info, hit, me, false, myHit)
+            if not ok then hm:call("directDamage", info, hit, nil, false, nil) end
+            pcall(combo.notify_hit, ch:get_GameObject(), hit, info, nil)   -- (HP bar)
+            F.hits = F.hits + 1
+            local key, now = ch:get_address(), os.clock()
+            local m = sk.burnMeters[key]
+            if not m or now - m.at > 10 then m = { value = 0 } end
+            m.value, m.at = m.value + (combo.ex.bwBurnPts or 50), now
+            if m.value >= 100 then m.value = 0; sk.burnQ[#sk.burnQ + 1] = ch:add_ref() end
+            sk.burnMeters[key] = m
+        end)
+    end
+end
+re.on_application_entry("LateUpdateBehavior", function()
+    local now = os.clock()
+    if sk.testSnd then   -- (menu: test a fire sound where I stand)
+        local id = sk.testSnd
+        sk.testSnd = nil
+        pcall(function()
+            local a = runtime.player()
+            if #sk.pool == 0 then sk.prepare_sounds(a) end
+            sk.fire_sound(id, a.character:get_GameObject():get_Transform():get_Position(), "test", 5)
+        end)
+    end
+    for k = #sk.burnQ, 1, -1 do   -- burning, asked outside the damage calculation (like the poison)
+        local ch = table.remove(sk.burnQ, k)
+        pcall(function()
+            if ch:get_IsDead() then return end
+            local req = sdk.create_instance("app.StatusConditionDef.RequestInfo"):add_ref()
+            ch["<StatusConditionCtrl>k__BackingField"]:call(APPLY_STATUS, 5, nil, req, false)
+            if sk.fire then sk.fire.burned = sk.fire.burned + 1 end
+        end)
+    end
+    local ig = sk.ignite
+    if ig and now >= ig.at then
+        sk.ignite = nil
+        local ex = combo.ex
+        local segStart, segEnd = {}, {}   -- (user: it spreads patch by patch from the start, and goes out the same way)
+        for i = 1, 8 do
+            segStart[i] = now + (i - 1) * (ex.bwInStep or 0.1)
+            segEnd[i] = segStart[i] + (ex.bwSecs or 3.7) + (i - 1) * math.max(0, (ex.bwOutStep or 0.1) - (ex.bwInStep or 0.1))
+        end
+        sk.fire = { pos = ig.pos, fx = ig.fx, fz = ig.fz, rot = ig.rot, t0 = now, untilT = segEnd[8], segStart = segStart, segEnd = segEnd,
+                    lit = 0, nextT = now, hits = 0, burned = 0 }
+        local function at(d) return Vector3f.new(ig.pos.x + ig.fx * d, ig.pos.y, ig.pos.z + ig.fz * d) end
+        sk.fireSpots = { at(sk.ahead), at(sk.ahead + 3.5 * 1.9), at(sk.ahead + 7 * 1.9) }
+        sk.fireSndNoted = false
+        sk.fire_sound(ex.bwSndIgnite, sk.fireSpots[1], "ignition", 1)   -- (where the fire starts)
+        note("Caustic Brew EX: the acid ignites")
+    end
+    local F = sk.fire
+    if F and F.lit < 8 then   -- the patches catch one after another; a burning sound with the 1st, the 4th and the 8th
+        while F.lit < 8 and now >= F.segStart[F.lit + 1] do
+            F.lit = F.lit + 1
+            local i = F.lit
+            local d = sk.ahead + (i - 1) * 1.9
+            pcall(fire_at, Vector3f.new(F.pos.x + F.fx * d, F.pos.y, F.pos.z + F.fz * d), F.rot, F.segEnd[i])
+            local spot = (i == 1 and 1) or (i == 4 and 2) or (i == 8 and 3) or nil
+            if spot and sk.fireSpots then sk.fire_sound(combo.ex.bwSndBurn, sk.fireSpots[spot], "burning", spot + 1) end
+        end
+    end
+    if F and not F.sndOff and now >= F.untilT - (combo.ex.bwSndEarly or 0.5) then   -- (user: the loop 0.3 s sooner)
+        F.sndOff = true
+        for i, q in ipairs(sk.fireSpots or {}) do sk.fire_sound(combo.ex.bwSndStop, q, "stop", i + 1) end
+        pcall(function()   -- (user: the loop didn't stop) the game's stop with a short fade, then the objects go
+            local burn = math.tointeger(combo.ex.bwSndBurn or 0) or 0
+            for i = 2, 4 do
+                local e = sk.firePool and sk.firePool[i]
+                if e and burn ~= 0 then pcall(e.c.call, e.c, "stopTriggered(System.UInt32, via.GameObject, System.UInt32)", burn, e.go, 300) end
+            end
+        end)
+        sk.fireKillAt = now + 0.5
+        sk.fireSpots = nil
+    end
+    if F then
+        if now > F.untilT then
+            note(("Caustic Brew EX: the fire is out - %d fire hit(s), %d set burning"):format(F.hits, F.burned))
+            sk.fire = nil
+        elseif now >= F.nextT then
+            F.nextT = now + (combo.ex.bwTick or 0.3)
+            local a = runtime.player()
+            if a then local okT, eT = pcall(sk.fire_tick, a); if not okT then sk.info = "fire failed: " .. tostring(eT) end end
+        end
+    end
+    if sk.fireKillAt and now >= sk.fireKillAt then fire_pool_clear() end
+    for k = #fireLive, 1, -1 do
+        if now > fireLive[k].dieAt then
+            pcall(function() fireLive[k].go:call("destroy(via.GameObject)", fireLive[k].go) end)
+            table.remove(fireLive, k)
+        end
+    end
+end)
+re.on_script_reset(function()
+    for _, f in ipairs(fireLive) do pcall(function() f.go:call("destroy(via.GameObject)", f.go) end) end
+end)
 function sk.finish(why)
     sk.stage, sk.on, sk.wave, sk.area = nil, false, nil, nil
     if why then sk.info = why end
@@ -9278,7 +11108,7 @@ re.on_pre_application_entry("LateUpdateBehavior", function()
         local smg = runtime.player().character:get_StaminaManager()
         local amt = smg:get_MaxValue() * sm.refund
         local before = smg:get_RemainingAmount()
-        smg:add(amt, true)   -- (as DragonCore's consume_stamina, with + instead of -)
+        smg:add(amt + 0.0, true)   -- (as DragonCore's consume_stamina, with + instead of -; a float, never an integer)
         note(("Eldritch Smite hit: +%.0f stamina (%.0f -> %.0f)"):format(amt, before, smg:get_RemainingAmount()))
     end)
 end)
@@ -9438,15 +11268,18 @@ local md = { info = "-", lastPress = -10, above = 1.8, back = 0.0, range = 15, c
              -- (with its start effects + sound), 170/1101 = the teleport (sound 2823464530), 170/1102 the landing)
              PREP = "Job07_SkyDive", PREP_BANK = 170, WARP_MOTION = 1101, prepMax = 0.6, warpSound = 2823464530,
              -- (user: use the WHOLE SkyDive - its own targeting + teleport - and only swap the strike after the teleport)
-             mode = "sky", afterTeleport = 0.05, lockWarp = true, skyAimH = 0.75,   -- (2026-10-27: "sky" = SkyDive does it all)
+             mode = "msp", afterTeleport = 0.05, lockWarp = true, skyAimH = 0.75,   -- (user 2026-10-30: SkyDive's teleport, then the real Air Empale with its own hover - "ours" (1.0-1.1.2) tried and rejected; "sky" kept)
              landAnim = "sky",   -- (touch-down landing attack: off - a misunderstanding, code kept)
-             diveAnim = "sky",   -- (user 2026-10-27: back to SkyDive's own - with RyoteAttack_095 there was no hit; "oni" kept in the menu)
+             diveAnim = "empale",   -- (user 2026-10-30: the old Air Empale look; "sky" = SkyDive's own (Spearhand plunge), "oni" kept)
+             empaleLandCut = 80, empaleFrom = 0, empaleFall = 12,   -- (user 2026-10-30: keep Air Empale's own hover - "it stops you in the air for a bit, then the dive")   -- (Air Empale's landing 110/401 is 174 f with its recovery: handed back to the game at this frame)
+             trackSpeed = 6, minDrop = 3.5, onTopAbove = 2.5,   -- (user: height - lying enemies too low, on a chimera too high)   -- (user 2026-10-30: the Air Empale follows a moving enemy, m/s sideways)
              fallSpeed = 7, strikeDepth = 0.3, ownStrike = true, dmg = 1500, react = 300, landGap = 0.5, aimBack = 0.4, headHold = 0.25 }   -- (user: from scratch - SkyDive's targeting finds nothing for a Fighter)
 dbg.misty = md
 ;(function()   -- (stand probe, see tools/patch_md_standprobe.py)
     local P = { untilT = 0, on = false, sig = nil, calls = 0, lastAct = nil, lastMode = nil }
     dbg.standProbe = P
     function P.start() if P.on and not json.RELEASE then P.untilT, P.sig, P.calls, P.lastAct, P.lastMode = os.clock() + 6, nil, 0, nil, nil end end
+    if not dbg.RESEARCH then return end   -- (crash hunt: its hook ran for every character every frame)
     local function live_now() return os.clock() < P.untilT end
     local function me() local a = runtime.player(); return a and a.character end
     local function addr(o) local ok, v = pcall(function() return o:get_address() end); return ok and v or nil end
@@ -9564,8 +11397,8 @@ function md.set_aim(a, t)
     end
     put("set_AimTargetUniversalPosition", md.AIM_OFFS[1], u.x, aimY, u.z)
     put("set_AimTargetRootUniversalPosition", md.AIM_OFFS[2], u.x, u.y, u.z)
-    pcall(function() ch:set_field("<AimCharacter>k__BackingField", t) end)
-    pcall(function() ch:set_field("<AimObject>k__BackingField", t:get_GameObject()) end)
+    pcall(function() combo.ex.setref(ch, "<AimCharacter>k__BackingField", t) end)
+    pcall(function() combo.ex.setref(ch, "<AimObject>k__BackingField", t:get_GameObject()) end)
     if not md.aimNoted then   -- once: does the game read it back?
         md.aimNoted = true
         local rb = "?"
@@ -9644,44 +11477,98 @@ function md.land_update(a, now)
     if md.landN > 3 and fr >= endF - 0.5 then return md.land_end(a, "done") end
 end
 -- RyoteAttack_095 from SkyDive's dive start: FSM paused (SkyDive's action still moves us), changed once
-function md.dive_anim(a)
-    if md.diveOn == "done" then return end
+md.DIVE_MOT = { oni = { dyn = "ryote", id = 10, name = "RyoteAttack_095" },
+                empale = { bank = 110, id = 400, land = 401, name = "Air Empale" } }
+function md.dive_spec()
+    local m = md.DIVE_MOT[md.diveAnim]
+    if not m then return nil end
+    return m, m.dyn and combo.ex.banks[m.dyn].bank or m.bank
+end
+function md.mot_ready(a, m, bank, id)
+    if m.dyn then pcall(combo.ex.bank, a, m.dyn) end
+    local info = sdk.create_instance("via.motion.MotionInfo", true)
+    return a.character:get_Motion():call("getMotionInfo(System.UInt32, System.UInt32, via.motion.MotionInfo)", bank, id, info) == true
+end
+-- (Air Empale) its landing motion from touch-down; the game gets the character back at empaleLandCut
+function md.land_mot(a, now)
+    local m, bank = md.dive_spec()
+    local L = a.character:get_Motion():getLayer(0)
+    if md.diveOn ~= "land" then
+        combo.ex.fsm(a, true)
+        L:call(combo.ex.CHANGE, bank, m.land, 0.0, 2.0, 1, 1)
+        L:call("set_Speed", 1.0)
+        md.diveOn, md.landMotT = "land", now
+        note("Misty Dive: touch-down - " .. m.name .. " landing")
+        return
+    end
+    local fr = L:call("get_Frame") or 0
+    local off = L:call("get_MotionBankID") ~= bank or L:call("get_MotionID") ~= m.land
+    if off or fr >= md.empaleLandCut or now - (md.landMotT or now) > 3 then
+        md.diveOn = false
+        pcall(combo.ex.fsm, a, false)
+        md.stage = nil
+        md.info = ("%s landing handed back at f%.0f%s"):format(m.name, fr, off and " (layer switched)" or "")
+        note("Misty Dive: " .. md.info)
+    end
+end
+function md.dive_anim(a, cur)
+    if md.diveOn == "done" or md.diveOn == "land" then return end
+    local m, bank = md.dive_spec()
+    if not m then return end
     local dv = false
     pcall(function() dv = md.sdObj and md.sdObj:get_field("IsDiveStart") == true end)
-    if not dv then pcall(combo.ex.bank, a, "ryote"); return end   -- (the bank loads while SkyDive prepares)
+    if not dv then pcall(md.mot_ready, a, m, bank, m.id); return end   -- (a dynamic bank loads while SkyDive prepares)
     local L = a.character:get_Motion():getLayer(0)
+    if m.land and md.diveOn and cur and cur:find("Landing") then return md.land_mot(a, os.clock()) end
     if not md.diveOn then
-        local okR, rdy = pcall(combo.ex.ready, a, md.LAND)
+        local okR, rdy = pcall(md.mot_ready, a, m, bank, m.id)
         if not (okR and rdy) then return end
         combo.ex.fsm(a, true)
-        L:call(combo.ex.CHANGE, combo.ex.banks.ryote.bank, md.LAND[2], 0.0, 3.0, 1, 1)
+        local from = m.land and md.empaleFrom or 0.0   -- (Air Empale: past its hover)
+        L:call(combo.ex.CHANGE, bank, m.id, from, m.land and 1.0 or 3.0, 1, 1)
         L:call("set_Speed", 1.0)
-        md.diveOn = true
-        note("Misty Dive: SkyDive's dive started - RyoteAttack_095")
+        md.diveOn, md.pushT = true, os.clock()
+        note("Misty Dive: SkyDive's dive started - " .. m.name)
         return
     end
     -- held: if something switched the layer back, ours again; at its end frame it stays on the last pose
-    if L:call("get_MotionBankID") ~= combo.ex.banks.ryote.bank or L:call("get_MotionID") ~= md.LAND[2] then
-        L:call(combo.ex.CHANGE, combo.ex.banks.ryote.bank, md.LAND[2], L:call("get_Frame") or 0.0, 0.0, 1, 1)
+    if L:call("get_MotionBankID") ~= bank or L:call("get_MotionID") ~= m.id then
+        L:call(combo.ex.CHANGE, bank, m.id, L:call("get_Frame") or 0.0, 0.0, 1, 1)
     elseif (L:call("get_Frame") or 0) >= (L:call("get_EndFrame") or 999) - 1 then
         L:call("set_Speed", 0.0)
     end
+    if m.land then md.push_down(a) end
+end
+-- (Air Empale) its plunge's own movement isn't SkyDive's: pushed down through the character controller while airborne
+function md.push_down(a)
+    local now = os.clock()
+    local dt = math.min(0.1, math.max(0, now - (md.pushT or now)))
+    md.pushT = now
+    if (md.empaleFall or 0) <= 0 or dt <= 0 then return end
+    local grounded = false
+    pcall(function() grounded = a.character:call("get_IsGround") == true end)
+    if grounded then return end
+    local ok, err = pcall(a.character.call, a.character, "addLocalMove(via.vec3, System.Boolean)", Vector3f.new(0, -md.empaleFall * dt, 0), false)
+    if not ok and md.pushErr ~= tostring(err) then md.pushErr = tostring(err); note("Misty Dive: push down FAILED: " .. md.pushErr) end
 end
 -- after SkyDive: the fall goes on (its action runs, gravity), our pose stays (FSM paused, last frame every frame)
 function md.dive_hold(a, now)
     local grounded = false
     pcall(function() grounded = a.character:call("get_IsGround") == true end)
+    local hm, hbank = md.dive_spec()
+    if grounded and hm and hm.land then md.stage = "landMot"; return md.land_mot(a, now) end
     if grounded or now - (md.holdT or now) > 4.0 then
         md.diveOn = false
         pcall(combo.ex.fsm, a, false)
         md.stage = nil
-        md.info = grounded and "landed (RyoteAttack_095 pose held in the fall)" or "pose hold timed out (4 s)"
+        md.info = grounded and "landed (dive pose held in the fall)" or "pose hold timed out (4 s)"
         note("Misty Dive: " .. md.info)
         return
     end
     pcall(function()
         local L = a.character:get_Motion():getLayer(0)
-        local bank, id = combo.ex.banks.ryote.bank, md.LAND[2]
+        local bank, id = hbank, hm and hm.id
+        if not id then return end
         if L:call("get_MotionBankID") ~= bank or L:call("get_MotionID") ~= id then
             L:call(combo.ex.CHANGE, bank, id, 70.0, 0.0, 1, 1)
         end
@@ -9689,6 +11576,7 @@ function md.dive_hold(a, now)
         L:call("set_Speed", 0.0)
         L:call("set_Frame", math.max(0, endF - 1))
     end)
+    if hm and hm.land then md.push_down(a) end
 end
 function md.clear_aim(a)
     if not md.AIM_OFFS then return end
@@ -9763,6 +11651,7 @@ function md.pick(a)
         for k = 0, list._size - 1 do
             pcall(function()
                 local ch = list._items[k]._Chara
+                if not dbg.valid(ch) then return end   -- (crash hunt: never into a destroyed enemy)
                 n = n + 1
                 if not md.alive(ch) then return end
                 nAlive = nAlive + 1
@@ -9800,6 +11689,7 @@ function md.why(a)
         for k = 0, list._size - 1 do
             pcall(function()
                 local ch = list._items[k]._Chara
+                if not dbg.valid(ch) then return end   -- (crash hunt: never into a destroyed enemy)
                 local q = ch:get_GameObject():get_Transform():get_Position()
                 local dx, dz = q.x - p.x, q.z - p.z
                 local d = math.sqrt(dx * dx + dz * dz)
@@ -9938,6 +11828,7 @@ local function start(a)
             local f = tr:get_Rotation() * Vector3f.new(0, 0, 1)
             local len = math.sqrt(f.x * f.x + f.z * f.z)
             md.face = len > 0.001 and { f.x / len, f.z / len, tr:get_Rotation() } or nil
+            md.pressY = tr:get_Position().y
         end)
         note("Misty Dive from the air: " .. (t and "straight to the enemy" or "no enemy - straight ahead"))
         dive(a)
@@ -9960,6 +11851,7 @@ local function start(a)
         local f = tr:get_Rotation() * Vector3f.new(0, 0, 1)
         local len = math.sqrt(f.x * f.x + f.z * f.z)
         md.face = len > 0.001 and { f.x / len, f.z / len, tr:get_Rotation() } or nil
+        md.pressY = tr:get_Position().y
     end)
     request(a, md.PREP)
 end
@@ -9972,6 +11864,7 @@ local function update(a)
     if not md.stage then return end
     if md.stage == "land" then return md.land_update(a, now) end
     if md.stage == "diveHold" then return md.dive_hold(a, now) end
+    if md.stage == "landMot" then return md.land_mot(a, now) end
     if md.stage == "prep" then   -- until SkyDive reaches its teleport (motion 1101), then our warp + dive
         local cur = tostring(a:current_action(0) or "")
         if cur == md.PREP then md.prepStarted = md.prepStarted or now end
@@ -9982,20 +11875,23 @@ local function update(a)
         end)
         if md.mode == "sky" then   -- (2026-10-27) SkyDive does it all; we only feed it the aim target every frame
             local okA, eA = pcall(md.set_aim, a, md.target)
-            if md.diveAnim == "oni" and md.prepStarted then pcall(md.dive_anim, a) end
+            if md.diveAnim ~= "sky" and md.prepStarted then pcall(md.dive_anim, a, cur) end
             if not okA and md.aimErr ~= tostring(eA) then md.aimErr = tostring(eA); note("Misty Dive (sky): aim target FAILED: " .. md.aimErr) end
             if not md.target and not md.noTargetNoted then md.noTargetNoted = true; note("Misty Dive (sky): no enemy picked - SkyDive aims at nothing") end
             if md.prepStarted then
                 if not cur:find("^Job07_SkyDive") then   -- its dive + landing over (or something else took over)
                     md.clear_aim(a)
+                    if md.diveOn == "land" then md.stage = "landMot"; return end   -- (Air Empale's landing plays on)
                     if md.diveOn then   -- (user: it changed to the fall animation) frozen on our last frame until grounded
                         local grounded = false
                         pcall(function() grounded = a.character:call("get_IsGround") == true end)
                         if not grounded then
                             md.stage, md.holdT = "diveHold", now
-                            note("Misty Dive: SkyDive over in the air - holding RyoteAttack_095's last pose until I land")
+                            note("Misty Dive: SkyDive over in the air - holding the dive's last pose until I land")
                             return
                         end
+                        local lm = md.dive_spec()
+                        if lm and lm.land then md.stage = "landMot"; return md.land_mot(a, now) end
                         md.diveOn = false; pcall(combo.ex.fsm, a, false)
                     end
                     if md.landAnim == "oni" then return md.land_start(a) end
@@ -10015,6 +11911,15 @@ local function update(a)
                 if md.target then   -- above the enemy in front, facing it (SkyDive put us above ourselves)
                     pcall(function()
                         local dest, rot, dx, dz = combo.dive_spot(a, md.target, md.above, md.back)
+                        pcall(function()   -- (user: the height) at least minDrop over its feet, at most onTopAbove over me on it
+                            local fy = md.target:get_GameObject():get_Transform():get_Position().y
+                            local y = math.max(dest.y, fy + md.minDrop)
+                            if md.pressY and md.pressY > fy + 1.0 then y = math.min(y, md.pressY + md.onTopAbove) end
+                            if y ~= dest.y then
+                                note(("Misty Dive: height %.1f m over its feet (was %.1f)"):format(y - fy, dest.y - fy))
+                                dest = Vector3f.new(dest.x, y, dest.z)
+                            end
+                        end)
                         tr:set_Position(dest)
                         tr:set_Rotation(rot)
                         md.face = { dx / math.max(0.001, math.sqrt(dx * dx + dz * dz)), dz / math.max(0.001, math.sqrt(dx * dx + dz * dz)), rot }
@@ -10031,6 +11936,12 @@ local function update(a)
                 md.stage, md.asked, md.started, md.teleportAt = "dive", now, nil, nil
                 local p0 = tr:get_Position()
                 md.lockXZ = { p0.x, p0.z }   -- (user: straight down - no sideways drift with the stick / momentum)
+                if onTarget and md.target then   -- (user: tracking) the spot keeps its offset from the enemy
+                    pcall(function()
+                        local q = md.target:get_GameObject():get_Transform():get_Position()
+                        md.lockXZ.track = { t = md.target, ox = p0.x - q.x, oz = p0.z - q.z, tl = now }
+                    end)
+                end
                 md.info = onTarget and "SkyDive's teleport, moved above the enemy, the air Empale" or "SkyDive's teleport (no enemy), the air Empale"
                 note("Misty Dive: " .. md.info)
                 request(a, md.ACTION)
@@ -10054,6 +11965,18 @@ local function update(a)
             local tr = a.character:get_GameObject():get_Transform()
             local p = tr:get_Position()
             local L = md.lockXZ
+            local T = L.track
+            if T and (md.trackSpeed or 0) > 0 and md.alive(T.t) then   -- (tracking: the spot slides after the enemy)
+                local q = T.t:get_GameObject():get_Transform():get_Position()
+                local dt = math.min(0.1, math.max(0, now - T.tl)); T.tl = now
+                local wx, wz = q.x + T.ox - L[1], q.z + T.oz - L[2]
+                local d = math.sqrt(wx * wx + wz * wz)
+                local step = md.trackSpeed * dt
+                if d > 0.001 then
+                    local k = math.min(1, step / d)
+                    L[1], L[2] = L[1] + wx * k, L[2] + wz * k
+                end
+            end
             local push = math.sqrt((p.x - L[1]) ^ 2 + (p.z - L[2]) ^ 2)
             md.push = math.max(md.push or 0, push)
             if not L.y0 then L.y0, L.t0 = p.y, now end
@@ -10086,9 +12009,20 @@ local function update(a)
         tr:set_Rotation(h.rot)
         pcall(combo.face, a, h.dx, h.dz)
     end
+    if md.skipHover then   -- (the real Air Empale: past its hover - its motion may show up a frame after the action)
+        pcall(function()
+            local L = a.character.FullBodyLayer
+            if L:call("get_MotionBankID") == 110 and L:call("get_MotionID") == 400 then
+                if (L:call("get_Frame") or 0) < (md.empaleFrom or 0) then L:call("set_Frame", md.empaleFrom) end
+                md.skipHover = nil
+            end
+        end)
+        if md.skipHover and now - md.skipHover > 0.3 then md.skipHover = nil end
+    end
     local cur = tostring(a:current_action(0) or "")
     if not md.started then
-        if cur == md.ACTION then md.started = now
+        if cur == md.ACTION then
+            md.started, md.skipHover = now, now
         elseif now - md.asked > 0.5 then   -- (never left hanging in the air: the game's fall)
             md.stage, md.lockXZ = nil, nil
             md.info = md.ACTION .. " did not start (now " .. cur .. ") - falling"
@@ -10168,7 +12102,7 @@ function md.hue()   -- the colour picked under Look (285 / 300 / 315); nil = the
     local h = p40.mode == "ours" and tonumber(tostring(p40.variant or ""):match("^e(%d+)$") or "")
     return (h == 285 or h == 300 or h == 315) and h or nil
 end
-function md.busy() return md.stage ~= nil or md.want or (dbg.blink and dbg.blink.stage == "prep") or os.clock() - (md.lastBusy or -10) < 1.5 end   -- (3.86: Blink Strike's preparing jump is recoloured too)
+function md.busy() return os.clock() < (md.forceUntil or 0) or md.stage ~= nil or md.want or (dbg.blink and dbg.blink.stage == "prep") or os.clock() - (md.lastBusy or -10) < 1.5 end   -- (3.86: Blink Strike's preparing jump is recoloured too)
 function dbg.md_seen(args, how)   -- (diagnosis 2.94; off unless md.logFx)
     if not md.logFx or not md.busy() then return end
     local go = sdk.to_managed_object(args[2]):call("get_GameObject")
@@ -10837,6 +12771,7 @@ end)()
                 for k = 0, list._size - 1 do
                     pcall(function()
                         local ch = list._items[k]._Chara
+                        if not dbg.valid(ch) then return end   -- (crash hunt: never into a destroyed enemy)
                         if not alive(ch) then return end
                         local v = aim_of(ch)
                         local vx, vy, vz = v.x - palm.x, v.y - palm.y, v.z - palm.z
@@ -11222,6 +13157,7 @@ end)()
             for k = 0, list._size - 1 do
                 pcall(function()
                     local ch = list._items[k]._Chara
+                    if not dbg.valid(ch) then return end   -- (crash hunt: never into a destroyed enemy)
                     if not alive(ch) then return end
                     local g = ch:get_GameObject():get_Transform():get_Position()
                     local q = aim_of(ch) or g   -- (3.46: the body, not the object - flying harpies)
@@ -13031,7 +14967,7 @@ end)()
 end)()
 
 re.on_draw_ui(function()
-    if not imgui.tree_node(NAME .. " " .. VERSION) then return end
+    if not dbg.tree(NAME .. " " .. VERSION) then return end
     for _, c in ipairs(THEME) do imgui.push_style_color(c[1], c[2]) end
     local ok, err = pcall(function()
     local ch
@@ -13058,9 +14994,9 @@ re.on_draw_ui(function()
         ch, cfg.glow = imgui.checkbox("Arm effect", cfg.glow)
         if ch then save_cfg() end
         if dbg.slots then pcall(dbg.slots.menu) end   -- (1.1)
-        if imgui.tree_node("Dimension Door") then
+        if dbg.tree("Dimension Door") then
             if dbg.dd then pcall(dbg.dd.draw) else imgui.text("Dimension Door not loaded: " .. tostring(dbg.ddErr)) end
-            imgui.tree_pop()
+            dbg.tree_pop()
         end
         return
     end
@@ -13092,7 +15028,7 @@ re.on_draw_ui(function()
     local chg
     chg, dbg.noxGlowMode = imgui.checkbox("  blade glow mode (3.03 crash test: off)", dbg.noxGlowMode)
     if ch then save_cfg() end
-    if cfg.nox and imgui.tree_node("Nox look settings (blade glow + mist)") then
+    if cfg.nox and dbg.tree("Nox look settings (blade glow + mist)") then
         local SL = { { "blade glow: red", "R", 255 }, { "blade glow: green", "G", 255 }, { "blade glow: blue", "B", 255 },
                      { "blade glow: brightness", "Bright", 8 } }
         local any = false
@@ -13118,7 +15054,7 @@ re.on_draw_ui(function()
         block("during Eldritch Smite (part 2):", function(part, k) return cfg.noxSmite[part .. k] end,
               function(part, k, v) cfg.noxSmite[part .. k] = v end, "smite")
         if any then save_cfg() end
-        imgui.tree_pop()
+        dbg.tree_pop()
     end
 
     title("Skills")
@@ -13144,11 +15080,11 @@ re.on_draw_ui(function()
         if ch then save_cfg() end
     end
 
-    if imgui.tree_node("Dimension Door") then   -- (i-0.7)
+    if dbg.tree("Dimension Door") then   -- (i-0.7)
         if dbg.dd then pcall(dbg.dd.draw) else imgui.text("Dimension Door not loaded: " .. tostring(dbg.ddErr)) end
-        imgui.tree_pop()
+        dbg.tree_pop()
     end
-    if imgui.tree_node("Advanced") then
+    if dbg.tree("Advanced") then
         title("Arm effect")
         ch, cfg.freezeAt = imgui.slider_float("   frozen at (s)", cfg.freezeAt, 0.05, 3.0, "%.2f")
         if ch then glow_clear(); save_cfg() end
@@ -13179,7 +15115,7 @@ re.on_draw_ui(function()
         ch, cfg.comboNoDust = imgui.checkbox("   no dust from the Archfey Combo's Rush parts", cfg.comboNoDust)
         if ch then save_cfg() end
         title("Archfey Combo")
-        if imgui.tree_node("   Archfey Combo EX") then
+        if dbg.tree("   Archfey Combo EX") then
             local ex = combo.ex
             local _
             local before = {}
@@ -13193,8 +15129,8 @@ re.on_draw_ui(function()
             local mi = ({ auto = 1, on = 2, off = 3 })[ex.mode] or 1
             local chm, nv = imgui.combo("EX##ex", mi, { "auto (when the sword has Cloudfall Strike)", "always on", "off" })
             if chm then ex.mode = MODES[nv] end
-            imgui.text(("sword has Cloudfall Strike: %s  -  Archfey Combo level %d  -  EX is %s  (name: %s)"):format(ex.weapon_has() and "YES" or "no",
-                ex.level(), ex.active() and "ON" or "off", tostring(ex.nameNow or "-")))
+            imgui.text(("sword has Cloudfall Strike: %s  -  Archfey Combo level %d  -  EX is %s  (name: %s)"):format(ex.status.cloud and "YES" or "no",
+                ex.status.lv or 0, ex.status.on and "ON" or "off", tostring(ex.nameNow or "-")))
             _, ex.needLv2 = imgui.checkbox("auto needs Archfey Combo at level 2 (the game's EX rule)##ex", ex.needLv2)
             imgui.text("last hit: " .. tostring(ex.lastHitInfo) .. (ex.skipWhy and ("  |  last slide skip: " .. ex.skipWhy) or ""))
             if ex.seInfo then imgui.text("last hit sound: " .. ex.seInfo) end
@@ -13202,7 +15138,7 @@ re.on_draw_ui(function()
             -- (user: "very hard to find stuff") each section its own colour: the header text + its sliders / dropdowns
             local function sec(label, text, bg, bgHi)
                 imgui.push_style_color(0, text)
-                local open = imgui.tree_node(label)
+                local open = dbg.tree(label)
                 imgui.pop_style_color(1)
                 if open then
                     imgui.push_style_color(7, bg); imgui.push_style_color(8, bgHi); imgui.push_style_color(9, bgHi)
@@ -13210,7 +15146,7 @@ re.on_draw_ui(function()
                 end
                 return open
             end
-            local function sec_end() imgui.pop_style_color(6); imgui.tree_pop() end
+            local function sec_end() imgui.pop_style_color(6); dbg.tree_pop() end
             -- HIT SOUNDS: type per move + play
             local SE_T = { "SlashLow", "SlashMiddle", "SlashHigh", "BlowLow", "BlowMiddle", "BlowHigh", "ShootLow", "ShootMiddle",
                 "ShootHigh", "BiteLow", "BiteMiddle", "BiteHigh", "Possession", "Gas", "Ch224ContactS", "Ch224ContactL", "DualBladeLow",
@@ -13246,20 +15182,61 @@ re.on_draw_ui(function()
                     _, ex.finStrong = imgui.checkbox("last hit (falling strike) stronger in the EX combo##ex", ex.finStrong)
                     local c5, v5 = imgui.combo("last hit reaction##ex", ex.finType + 2, TYPES); if c5 then ex.finType = v5 - 2 end
                     _, ex.finReact = imgui.slider_float("last hit stagger power##ex", ex.finReact, 0, 10000, "%.0f")
+                    do   -- (user: B) enemies with their own HP bar at the top
+                        local BM = { "light", "game" }
+                        local cb, vb = imgui.combo("last hit on BIG monsters (own HP bar)##exbig", (ex.finBig == "game") and 2 or 1,
+                            { "a light flinch every time (never a knockdown)", "the game decides (with the power above)" })
+                        if cb then ex.finBig = BM[vb] end
+                        if (ex.finBig or "light") == "light" then
+                            local LT = { { 5, "small flinch (Hitback_S)" }, { 6, "medium flinch (Hitback_M)" } }
+                            local pick = (ex.finTypeBig == 5) and 1 or 2
+                            local ct, vt = imgui.combo("   big monsters: flinch##exbig", pick, { LT[1][2], LT[2][2] })
+                            if ct then ex.finTypeBig = LT[vt][1] end
+                            _, ex.finReactBig = imgui.slider_float("   big monsters: its stagger power##exbig", ex.finReactBig, 0, 10000, "%.0f")
+                        end
+                    end
                     _, ex.force = imgui.checkbox("through the enemy's attack armour##ex", ex.force)
                     _, ex.stamina = imgui.slider_float("stamina cost##ex", ex.stamina, 0, 1000, "%.0f")
                     sec_end()
                 end
+                _, ex.t2Right = imgui.checkbox("2nd teleport: to my RIGHT (left when no room)##ex", ex.t2Right ~= false)
                 if sec("Slide position##exB2", 0xFF60FF60, 0xFF2A6A22, 0xFF3A9030) then
                     _, ex.slideRight = imgui.slider_float("sideways shift (m)##ex", ex.slideRight, -2.0, 2.0, "%.2f")
                     _, ex.slideLeft = imgui.checkbox("shift to the LEFT##ex", ex.slideLeft == true)
                     _, ex.slideBack = imgui.slider_float("start further back (m)##ex", ex.slideBack, 0.0, 5.0, "%.2f")
+                    _, ex.slideYaw = imgui.slider_float("angle away from the enemy (deg; slides past it)##ex", ex.slideYaw, -30, 60, "%.0f")
                     _, ex.slideFromStart = imgui.checkbox("from the start side instead of the opposite##ex", ex.slideFromStart == true)
                     _, ex.slideCheck = imgui.checkbox(("check the start spot, try others, skip when none fits (skipped %d x)##ex"):format(ex.skipped or 0), ex.slideCheck)
                     if ex.slideSpot then imgui.text("      last start: " .. ex.slideSpot) end
                     _, ex.slideGuard = imgui.checkbox("guard: cut the slide when pinned / inside the terrain##ex", ex.slideGuard)
+                    _, ex.slideFx = imgui.checkbox("teleport wisps stay where the slide starts##ex", ex.slideFx)
+                    _, ex.slideEfx = imgui.checkbox("effect where the slide starts##ex", ex.slideEfx)
+                    if ex.slideEfx then
+                        local names = {}
+                        for i, f in ipairs(ex.SLIDE_FX) do names[i] = f[1] end
+                        local chf
+                        chf, ex.slideEfxPick = imgui.combo("      effect##exsfx", ex.slideEfxPick, names)
+                        _, ex.slideEfxSize = imgui.slider_float("      size##exsfx", ex.slideEfxSize, 0.5, 3.0, "%.2f")
+                        _, ex.slideEfxUp = imgui.slider_float("      height (m)##exsfx", ex.slideEfxUp, -1.0, 2.0, "%.2f")
+                        _, ex.slideEfxSecs = imgui.slider_float("      lasts (s)##exsfx", ex.slideEfxSecs, 0.5, 8.0, "%.1f")
+                        _, ex.slideEfxSkip = imgui.slider_float("      start it at (s into the effect)##exsfx", ex.slideEfxSkip, 0.0, 2.0, "%.2f")
+                        if imgui.button("      try it here##exsfx") then
+                            require("DragonCore.game.actor_fx").defer(function()
+                                local okT, er = pcall(function()
+                                    local tr = runtime.player().character:get_GameObject():get_Transform()
+                                    ex.slide_efx(tr:get_Position(), tr:get_Rotation())
+                                end)
+                                if not okT then ex.slideEfxInfo = "error: " .. tostring(er) end
+                            end)
+                        end
+                        if ex.slideEfxInfo then imgui.same_line(); imgui.text(ex.slideEfxInfo) end
+                    end
                     if ex.guardWhy then imgui.text("      last cut: " .. ex.guardWhy) end
                     _, ex.follow = imgui.checkbox("move with the enemy during the new moves##ex", ex.follow)
+                    sec_end()
+                end
+                if sec("Effect viewer: our purple effects + their layers##exB9", 0xFFFF80E0, 0xFF6A2A5A, 0xFF903A7A) then
+                    dbg.fxv.menu()
                     sec_end()
                 end
                 if sec("Camera##exB3", 0xFFFFB060, 0xFF7A3C1E, 0xFFA0502A) then
@@ -13304,30 +15281,30 @@ re.on_draw_ui(function()
             -- DEBUG: research tools
             if sec("Debug / research (not needed for playing)##exC", 0xFFB0B0B0, 0xFF404040, 0xFF585858) then
                 imgui.text(("%s | contact hits %d | gap %s | followed %.1f m"):format(ex.info, ex.hits, ex.gap and ("%.2f m"):format(ex.gap) or "-", ex.followed or 0))
-                if imgui.tree_node("all hit sound types (play / pick)##exsep") then
+                if dbg.tree("all hit sound types (play / pick)##exsep") then
                     for i, nm in ipairs(SE_T) do
                         if imgui.button(("play##sep%d"):format(i)) then ex.seQueue = i - 1 end
                         imgui.same_line(); if imgui.button(("kick##sek%d"):format(i)) then ex.seKick = i - 1 end
                         imgui.same_line(); if imgui.button(("slide##ses%d"):format(i)) then ex.seSlide = i - 1 end
                         imgui.same_line(); imgui.text(("%2d. %s%s%s"):format(i - 1, nm, ex.seKick == i - 1 and "  <- kick" or "", ex.seSlide == i - 1 and "  <- slide" or ""))
                     end
-                    imgui.tree_pop()
+                    dbg.tree_pop()
                 end
                 local chT
                 chT, ex.seTraceOn = imgui.checkbox("trace the enemy's hit-sound steps##exst", ex.seTraceOn == true)
                 if chT and ex.seTraceOn then ex.seTrace = {} end
-                if ex.seTraceOn and imgui.tree_node("the trace##exst") then
+                if ex.seTraceOn and dbg.tree("the trace##exst") then
                     for _, l in ipairs(ex.seTrace or {}) do imgui.text(l) end
                     if imgui.button("save it for Claude##exst") then pcall(json.dump_file, "Pactblade_se_trace.json", ex.seTrace or {}) end
-                    imgui.tree_pop()
+                    dbg.tree_pop()
                 end
                 imgui.text("listeners of a real hit's notification: " .. tostring(ex.listeners or "(after the first EX hit)"))
                 _, ex.logAll = imgui.checkbox("log all my hits (not only the combo's)##exse", ex.logAll)
-                if imgui.tree_node("hit log (type / effect / sound / reaction)##ex") then
+                if dbg.tree("hit log (type / effect / sound / reaction)##ex") then
                     for _, l in ipairs(combo.hitLog or { "(none yet)" }) do imgui.text(l) end
-                    imgui.tree_pop()
+                    dbg.tree_pop()
                 end
-                if imgui.tree_node("old sound tester (recorded sound ids)##ex") then
+                if dbg.tree("old sound tester (recorded sound ids)##ex") then
                     imgui.text(ex.testInfo or "press play")
                     for i, e in ipairs(ex.SND_LIST) do
                         if e[1] ~= 0 then
@@ -13335,7 +15312,7 @@ re.on_draw_ui(function()
                             imgui.same_line(); imgui.text(("%2d. %s (%d)"):format(i, e[2], e[1]))
                         end
                     end
-                    imgui.tree_pop()
+                    dbg.tree_pop()
                 end
                 local c4, v4 = imgui.combo("old kick sound (only if the game's hit sound fails)##ex", ex.kickSnd, { "Kite Arrow hit 2", "Kite Arrow hit 1", "both", "Skydragon impact" })
                 if c4 then ex.kickSnd = v4 end
@@ -13350,7 +15327,7 @@ re.on_draw_ui(function()
             end end
             if changed then ex.saveAt = os.clock() + 0.5 end   -- (saved once the slider rests)
             if ex.saveAt and os.clock() >= ex.saveAt then ex.saveAt = nil; ex.save() end
-            imgui.tree_pop()
+            dbg.tree_pop()
         end
         ch, cfg.comboDynamic = imgui.checkbox("   warps go around the enemy (opposite, then the free sides; off = fixed spots)", cfg.comboDynamic)
         if ch then save_cfg() end
@@ -13395,13 +15372,13 @@ re.on_draw_ui(function()
             c3, cfg.slashTurnSpeed = imgui.slider_float("      turn speed (degrees a second)", cfg.slashTurnSpeed, 30, 1440, "%.0f")
             if c1 or c2 or c3 then save_cfg() end
         end
-        imgui.tree_pop()
+        dbg.tree_pop()
     end
 
     local chf
     chf, dbg.fogCut = imgui.slider_float("fog test: cut the Eldritch Bolt explosion after (s, 0 = off)", dbg.fogCut or 0.0, 0, 3, "%.1f")
-    if imgui.tree_node("Skill settings") then
-        if imgui.tree_node("Eldritch Smite") then
+    if dbg.tree("Skill settings") then
+        if dbg.tree("Eldritch Smite") then
             local sm, chm = dbg.smite, nil
             imgui.text(("slot: %s   |   %s"):format(tostring(cfg.smiteSkill), sm.info))
             if imgui.button(sm.binding and "press the skill now...##sm" or "put it in the next skill I press##sm") then sm.binding = true end
@@ -13425,9 +15402,9 @@ re.on_draw_ui(function()
             local sig = ("%s|%s|%s|%s|%s|%s|%s|%s|%s"):format(sm.fast, sm.blend, sm.boomScale, tostring(sm.lightOn), sm.lightUntil, sm.lightLm, sm.lightRadius, dbg.NOX.boostGlow, sm.chargeDelay)
             if sig ~= sm.lastSig then sm.lastSig, sm.dirtyAt = sig, os.clock() end
             if sm.dirtyAt and os.clock() - sm.dirtyAt > 1.5 then sm.dirtyAt = nil; sm.save() end   -- (saved by itself)
-            imgui.tree_pop()
+            dbg.tree_pop()
         end
-        if imgui.tree_node("Tasha's Caustic Brew") then
+        if dbg.tree("Tasha's Caustic Brew") then
             local sk, chb = dbg.brew, nil
             imgui.text(sk.info)
             chb, sk.tickSecs = imgui.slider_float("acid hits every (s)", sk.tickSecs, 0.1, 1.0, "%.2f")
@@ -13436,9 +15413,46 @@ re.on_draw_ui(function()
             chb, sk.poisonMul = imgui.slider_float("poison damage x (our poison only)", sk.poisonMul, 1, 5, "%.1f")
             chb, sk.lingerSecs = imgui.slider_float("acid lasts (s)", sk.lingerSecs, 1, 10, "%.1f")
             chb, sk.halfWidth = imgui.slider_float("acid strip: half width (m)", sk.halfWidth, 0.5, 4, "%.2f")
-            imgui.tree_pop()
+            if not json.RELEASE and dbg.tree("Caustic Brew EX (the acid ignites)##bw") then
+                local ex = combo.ex
+                local ch = {}
+                local MODES = { "auto", "on", "off" }
+                local chm, nv = imgui.combo("Brew EX##bw", ({ auto = 1, on = 2, off = 3 })[ex.bwMode or "on"] or 2,
+                    { "auto (the sword has Tornadic Strike + Caustic Brew level 2)", "always on (test)", "off" })
+                if chm then ex.bwMode = MODES[nv]; ch[1] = true end
+                imgui.text(("sword has Tornadic Strike: %s  -  Caustic Brew level %d  -  Brew EX is %s"):format(
+                    ex.status.torn and "YES" or "no", ex.status.lvBrew or 0, ex.status.bwOn and "ON" or "off"))
+                ch[3], ex.bwDelay = imgui.slider_float("ignites after the last splash (s)##bw", ex.bwDelay, 0, 5, "%.2f")
+                ch[4], ex.bwSecs = imgui.slider_float("burns for (s, the first patch)##bw", ex.bwSecs, 0.5, 10, "%.1f")
+                local cho
+                cho, ex.bwOutStep = imgui.slider_float("goes out patch by patch: s between them (0 = all at once)##bw", ex.bwOutStep, 0, 0.5, "%.2f")
+                if cho then ex.saveAt = os.clock() + 0.5 end
+                cho, ex.bwInStep = imgui.slider_float("spreads patch by patch: s between them (0 = all at once)##bw", ex.bwInStep, 0, 0.5, "%.2f")
+                if cho then ex.saveAt = os.clock() + 0.5 end
+                cho, ex.bwSndEarly = imgui.slider_float("burning sound ends this much before the fire (s)##bw", ex.bwSndEarly, -1, 2, "%.2f")
+                if cho then ex.saveAt = os.clock() + 0.5 end
+                ch[5], ex.bwTick = imgui.slider_float("fire hits every (s)##bw", ex.bwTick, 0.1, 1.0, "%.2f")
+                ch[6], ex.bwDmg = imgui.slider_float("damage per fire hit##bw", ex.bwDmg, 0, 2000, "%.0f")
+                ch[7], ex.bwBurnPts = imgui.slider_float("burn build-up per fire hit (100 = burning)##bw", ex.bwBurnPts, 0, 100, "%.0f")
+                ch[8], ex.bwFx = imgui.slider_int("fire look (grass fire 0 / 1 = full, 2 = one small flame)##bw", math.min(2, math.floor(ex.bwFx or 0)), 0, 2)
+                ch[9], ex.bwFxSize = imgui.slider_float("fire size##bw", ex.bwFxSize, 0.3, 3, "%.2f")
+                local names = {}
+                for i, e in ipairs(sk.FIRE_SNDS) do names[i] = e[2] .. (e[1] ~= 0 and (" (" .. e[1] .. ")") or "") end
+                for _, w in ipairs({ { "bwSndIgnite", "ignition sound" }, { "bwSndBurn", "burning sound (start / middle / end)" }, { "bwSndStop", "when the fire is out (stops a loop)" } }) do
+                    local pick = 1
+                    for i, e in ipairs(sk.FIRE_SNDS) do if e[1] == ex[w[1]] then pick = i end end
+                    local chs, np = imgui.combo(w[2] .. "##bw" .. w[1], pick, names)
+                    if chs then ex[w[1]] = sk.FIRE_SNDS[np][1]; ex.saveAt = os.clock() + 0.5 end
+                    imgui.same_line()
+                    if imgui.button("test here##bwt" .. w[1]) then sk.testSnd = ex[w[1]] end
+                end
+                for i = 1, 9 do if ch[i] == true then ex.saveAt = os.clock() + 0.5 end end
+                if ex.saveAt and os.clock() >= ex.saveAt then ex.saveAt = nil; pcall(ex.save) end
+                dbg.tree_pop()
+            end
+            dbg.tree_pop()
         end
-        if imgui.tree_node("Otherworldly Guise") then
+        if dbg.tree("Otherworldly Guise") then
             local gu, chh = dbg.guise, nil
             imgui.text("Perfect Defense / Divine Defense's slot: Caustic Brew's chant -> the guise | " .. tostring(gu.skill.info))
             chh, gu.skill.on = imgui.checkbox("the skill on##gu", gu.skill.on)
@@ -13469,10 +15483,10 @@ re.on_draw_ui(function()
             names = {}
             for i, c in ipairs(gu.LEGS) do names[i] = c[1] end
             chh, gu.legs = imgui.combo("legs##gu", gu.legs, names)
-            if imgui.button((gu.on and "end the guise" or "show the guise") .. "##gu") then pcall(gu.show, runtime.player()) end
+            if imgui.button((gu.on and "end the guise" or "show the guise") .. "##gu") then require("DragonCore.game.actor_fx").defer(function() pcall(gu.show, runtime.player()) end) end
             imgui.same_line()
-            if imgui.button("probe (armour parts -> log)##gu") then pcall(gu.probe, runtime.player()) end
-            if gu.parked then imgui.same_line(); if imgui.button("release the clone##gu") then pcall(gu.release_clone) end end
+            if imgui.button("probe (armour parts -> log)##gu") then require("DragonCore.game.actor_fx").defer(function() pcall(gu.probe, runtime.player()) end) end
+            if gu.parked then imgui.same_line(); if imgui.button("release the clone##gu") then require("DragonCore.game.actor_fx").defer(function() pcall(gu.release_clone) end) end end
             local fxNames = { "Mirage Dance element 0", "element 20", "both", "none" }
             chh, gu.fxSel = imgui.combo("ghost effects##gu", gu.fxSel, fxNames)
             chh, gu.cloudSpeed = imgui.slider_float("purple cloud speed##gu", gu.cloudSpeed, 0.1, 2, "%.2f")
@@ -13484,7 +15498,7 @@ re.on_draw_ui(function()
             chh, gu.bodyFx = imgui.checkbox("the clone's body effect##gu", gu.bodyFx)
             imgui.same_line()
             chh, gu.startFx = imgui.checkbox("its start effect##gu", gu.startFx)
-            if gu.on and gu.inst then if imgui.button("list the armour's material variables (log)##gu") then pcall(gu.matvars, gu.inst) end end
+            if gu.on and gu.inst then if imgui.button("list the armour's material variables (log)##gu") then require("DragonCore.game.actor_fx").defer(function() pcall(gu.matvars, gu.inst) end) end end
             if not gu.on and not gu.parked then
                 chh, gu.src = imgui.combo("clone source##gu", gu.src, { "shared afterimage (works; warp ghosts paused)", "Trickster decoy (test)" })
             else
@@ -13502,7 +15516,7 @@ re.on_draw_ui(function()
             chh, gu.ill.noise = imgui.slider_float("Illusion_NoiseBlend##gu", gu.ill.noise, 0, 1, "%.2f")
             chh, gu.ill.dither = imgui.slider_float("DitherFadeRate (1 = solid)##gu", gu.ill.dither, 0, 1, "%.2f")
             chh, gu.ill.dissolve = imgui.slider_float("DissolveRate (0 = all there)##gu", gu.ill.dissolve, 0, 1, "%.2f")
-            if gu.on and gu.inst then if imgui.button("redo the ghost look##gu") then local okG, eG = pcall(gu.ghost, gu.inst); note("Guise: ghost look again: " .. tostring(eG)) end end
+            if gu.on and gu.inst then if imgui.button("redo the ghost look##gu") then require("DragonCore.game.actor_fx").defer(function() local okG, eG = pcall(gu.ghost, gu.inst); note("Guise: ghost look again: " .. tostring(eG)) end) end end
             chh, gu.secs = imgui.slider_float("lasts (s)##gu", gu.secs, 5, 60, "%.0f")
             chh, gu.scale[1] = imgui.slider_float("width (x)##gu", gu.scale[1], 0.9, 1.4, "%.2f")
             chh, gu.scale[2] = imgui.slider_float("height (y)##gu", gu.scale[2], 0.9, 1.4, "%.2f")
@@ -13511,9 +15525,9 @@ re.on_draw_ui(function()
             chh, gu.hue = imgui.slider_float("glow hue##gu", gu.hue, 0, 360, "%.0f")
             chh, gu.sat = imgui.slider_float("glow saturation##gu", gu.sat, 0, 1, "%.2f")
             chh, gu.glow = imgui.slider_float("glow strength##gu", gu.glow, 0, 4, "%.2f")
-            imgui.tree_pop()
+            dbg.tree_pop()
         end
-        if imgui.tree_node("Hellish Rebuke") then
+        if dbg.tree("Hellish Rebuke") then
             local hr, chh = dbg.rebuke, nil
             imgui.text("Hit (no reaction / a flinch): Interact within the window | " .. tostring(hr.info))
             chh, hr.on = imgui.checkbox("on##hr", hr.on)
@@ -13524,7 +15538,7 @@ re.on_draw_ui(function()
             chh, hr.flinch = imgui.checkbox("the attacker flinches##hr", hr.flinch)
             chh, hr.cooldown = imgui.slider_float("once every (s)##hr", hr.cooldown, 0, 30, "%.0f")
             chh, hr.greenFire = imgui.checkbox("its burning is green##hr", hr.greenFire)
-            if imgui.button("test: dump my effect data (where the flame files are)##hr") then pcall(hr.dump_fx_data) end
+            if imgui.button("test: dump my effect data (where the flame files are)##hr") then require("DragonCore.game.actor_fx").defer(function() pcall(hr.dump_fx_data) end) end
             local tp = hr.fireTone == "gy" and 2 or 1
             chh, tp = imgui.combo("flame file look##hr", tp, { "gy2 (inverted layers like the rest)", "gy (inverted layers flipped)" })
             if chh then hr.fireTone = tp == 2 and "gy" or "gy2" end
@@ -13541,9 +15555,9 @@ re.on_draw_ui(function()
             chh, hr.boomSound = imgui.checkbox("its sound (hellishrebukesfx 6-8 s)##hr", hr.boomSound)
             chh, hr.sparkScale = imgui.slider_float("spark size##hr", hr.sparkScale, 0.05, 1.5, "%.2f")
             chh, hr.flash = imgui.checkbox("'charge finished' body flash + sound at the cast##hr", hr.flash)
-            imgui.tree_pop()
+            dbg.tree_pop()
         end
-        if imgui.tree_node("Spell slots (HUD test)") then   -- (1.1)
+        if dbg.tree("Spell slots (HUD test)") then   -- (1.1)
             pcall(function()
                 local SL, c = dbg.slots, nil
                 SL.refresh()
@@ -13558,9 +15572,9 @@ re.on_draw_ui(function()
                 c, SL.gap = imgui.slider_float("spacing##sl", SL.gap, 2.0, 5.0, "%.2f")
                 if imgui.button("save position##sl") then SL.save() end
             end)
-            imgui.tree_pop()
+            dbg.tree_pop()
         end
-        if imgui.tree_node("Misty Strike") then
+        if dbg.tree("Misty Strike") then
             pcall(function()
                 local b, c = dbg.blink, nil
                 c, b.fastFrom = imgui.slider_float("faster from frame##bsr", b.fastFrom, 106, 282, "%.0f")
@@ -13582,9 +15596,13 @@ re.on_draw_ui(function()
             chk, bs.prepWarp = imgui.slider_float("teleport after getting ready for (s)##bs", bs.prepWarp, 0.05, 0.8, "%.2f")
             chk, bs.groundLock = imgui.checkbox("stay on the ground while getting ready##bs", bs.groundLock)
             chk, bs.behind = imgui.slider_float("lands this far behind it (m, + its size)##bs", bs.behind, 0, 4, "%.1f")
-            imgui.tree_pop()
+            dbg.tree_pop()
         end
-        if imgui.tree_node("Eldritch Blast (beam)") then
+        if not json.RELEASE and combo.slx and dbg.tree("Eldritch Slash EX (Onimusha Skill_121, real sword hits)##slx") then
+            combo.slx.menu()
+            dbg.tree_pop()
+        end
+        if dbg.tree("Eldritch Blast (beam)") then
             local bm, chb = dbg.beam, nil
             imgui.text(("slot: %s%s   |   %s   |   frame %s of %s"):format(tostring(cfg.beamSkill), bm.slotInfo and ("  (" .. bm.slotInfo .. ")") or "",
                 bm.info, bm.frame and ("%.1f"):format(bm.frame) or "-", tostring(bm.endF or "-")))
@@ -13649,18 +15667,18 @@ re.on_draw_ui(function()
             chb, bm.to = imgui.slider_float("mesh point at the target##bm", bm.to, -10, 15, "%.1f")
             chb, bm.dots = imgui.checkbox("show dots (green = hand, red = beam tip, yellow = mesh beam anchor)##bm", bm.dots)
             if imgui.button("fire a beam now (test, no animation)##bm") then
-                pcall(function() local a = runtime.player(); bm.target = dbg.misty.pick(a); dbg.beam_fire(a) end)
+                require("DragonCore.game.actor_fx").defer(function() pcall(function() local a = runtime.player(); bm.target = dbg.misty.pick(a); dbg.beam_fire(a) end) end)
             end
-            imgui.tree_pop()
+            dbg.tree_pop()
         end
-        if imgui.tree_node("Hex") then
+        if dbg.tree("Hex") then
             local hx, chx = dbg.hex, nil
             imgui.text("Examine (Circle) in the bind window (after Eldritch Bolt / Burst): Hex on the bound enemy | " .. hx.info)
             chx, hx.secs = imgui.slider_float("lasts (s)##hex", hx.secs, 3, 60, "%.0f")
             chx, hx.defence = imgui.slider_float("defence lowered by##hex", hx.defence, 0, 0.5, "%.2f")
             chx, hx.heal = imgui.slider_float("HP back on a kill (of max)##hex", hx.heal, 0, 0.5, "%.2f")
             if imgui.button("Hex the enemy in front (test)##hex") then
-                pcall(function() local a = runtime.player(); dbg.hex_put(a, dbg.misty.pick(a)) end)
+                require("DragonCore.game.actor_fx").defer(function() pcall(function() local a = runtime.player(); dbg.hex_put(a, dbg.misty.pick(a)) end) end)
             end
             local rebuild = false
             chx, hx.freezeAt = imgui.slider_float("freeze at (s) - the X is replayed to this frame##hex", hx.freezeAt, 0, 4, "%.2f")
@@ -13681,9 +15699,9 @@ re.on_draw_ui(function()
             chx, hx.col[2] = imgui.slider_int("X green##hex", hx.col[2], 0, 255)
             chx, hx.col[3] = imgui.slider_int("X blue##hex", hx.col[3], 0, 255)
             chx, hx.behind = imgui.slider_float("Burst step: behind the enemy (m)##hex", hx.behind, 0.8, 5, "%.1f")
-            imgui.tree_pop()
+            dbg.tree_pop()
         end
-        if imgui.tree_node("Misty Dive") then
+        if dbg.tree("Misty Dive") then
             local md, chd = dbg.misty, nil
             imgui.text(("slot: %s   |   %s   |   no-shield checks answered: %d"):format(tostring(cfg.mistySkill), md.info, md.allowed or 0))
             if imgui.button(md.binding and "press the skill now...##md" or "put it in the next skill I press##md") then md.binding = true end
@@ -13699,9 +15717,23 @@ re.on_draw_ui(function()
             if chd then md.mode = ({ "msp", "ours", "sky" })[mpick] end
             if md.mode == "sky" then
                 chd, md.skyAimH = imgui.slider_float("   aim point: how high on its body (0 = feet, 1 = its top)##md", md.skyAimH, 0, 1, "%.2f")
-                local dp = md.diveAnim == "oni" and 2 or 1
-                chd, dp = imgui.combo("   dive animation##mddive", dp, { "SkyDive's own", "Onimusha RyoteAttack_095" })
-                if chd then md.diveAnim = dp == 2 and "oni" or "sky" end
+                local DA = { "empale", "sky", "oni" }
+                local dp = md.diveAnim == "sky" and 2 or md.diveAnim == "oni" and 3 or 1
+                chd, dp = imgui.combo("   dive animation##mddive", dp, { "Air Empale (Fighter, + its landing)", "SkyDive's own (Spearhand plunge)", "Onimusha RyoteAttack_095" })
+                if chd then md.diveAnim = DA[dp] end
+                if md.diveAnim == "empale" then
+                    chd, md.empaleFrom = imgui.slider_float("   Air Empale: start at frame (its hover ends ~22, blade on from 23)##md", md.empaleFrom, 0, 40, "%.0f")
+                    chd, md.empaleFall = imgui.slider_float("   Air Empale: extra fall speed (m/s, 0 = off)##md", md.empaleFall, 0, 40, "%.0f")
+                    chd, md.empaleLandCut = imgui.slider_float("   Air Empale landing: back to the game at frame##md", md.empaleLandCut, 20, 174, "%.0f")
+                end
+            end
+            if md.mode == "msp" then
+                chd, md.empaleFrom = imgui.slider_float("Air Empale: skip its hover - start at frame (0 = the game's own start)##mdmsp", md.empaleFrom, 0, 40, "%.0f")
+            end
+            if md.mode == "msp" then
+                chd, md.trackSpeed = imgui.slider_float("Air Empale follows a moving enemy (m/s sideways, 0 = straight down)##md", md.trackSpeed, 0, 20, "%.1f")
+                chd, md.minDrop = imgui.slider_float("at least this high over the enemy's feet (lying enemies) (m)##md", md.minDrop, 1, 8, "%.1f")
+                chd, md.onTopAbove = imgui.slider_float("standing on it (its back / a ledge): at most this high over me (m)##md", md.onTopAbove, 0.5, 6, "%.1f")
             end
             chd, md.afterTeleport = imgui.slider_float("air Empale after SkyDive's teleport (s)", md.afterTeleport, 0, 0.5, "%.2f")
             chd, md.above = imgui.slider_float("height above the enemy's head (m)", md.above, 0.5, 6, "%.1f")
@@ -13714,11 +15746,11 @@ re.on_draw_ui(function()
                 { "only on a staggered, standing enemy", "whenever the game does it", "never" })
             if chd then md.finish = FIN[fpick] end
             chd, md.range = imgui.slider_float("finds enemies up to (m)", md.range, 3, 40, "%.0f")
-            imgui.tree_pop()
+            dbg.tree_pop()
         end
-        imgui.tree_pop()
+        dbg.tree_pop()
     end
-    if imgui.tree_node("Debug") then
+    if dbg.tree("Debug") then
         imgui.text(("%s | button: %s | action: %s"):format(live.on and "ACTIVE" or "off", st.phase, tostring(dbg.action)))
         imgui.text(("Archfey Combo: part %d%s | %s | Forbeding Bolts: %d"):format(combo.stage,
             combo.target and " (target set)" or "", tostring(dbg.leap or "Quik Fot: -"), dbg.bindShots or 0))
@@ -13727,6 +15759,8 @@ re.on_draw_ui(function()
             imgui.text_colored("Last " .. combo.result.text, combo.result.ok and 0xFF40FF40 or 0xFF4040FF)
         end
         imgui.text(tostring(dbg.thief or "Footpad / Controlled Fall: -"))
+        if dbg.calcEndProbe then dbg.calcEndProbe.menu() end
+        if dbg.stealth then dbg.stealth.menu() end
         if dbg.diveRec then
             local chd
             chd, dbg.diveRec.on = imgui.checkbox("record Misty Dive / SkyDive (research): " .. dbg.diveRec.info, dbg.diveRec.on)
@@ -13743,12 +15777,19 @@ re.on_draw_ui(function()
         end
         imgui.new_line()
         for _, d in ipairs(DUMMIES) do
-            if d.tag == "ch250000" or d.tag == "ch254000" or d.tag == "ch253000" or d.tag == "ch253012" or d.tag == "ch230004" then
+            if (d.tag == "ch250000" or d.tag == "ch254000" or d.tag == "ch253000" or d.tag == "ch253012" or d.tag == "ch230004") then
                 if imgui.button("Spawn a NORMAL " .. d.name .. " (fights)##real") then require("DragonCore.game.actor_fx").defer(function() dummy.real(d) end) end
                 imgui.same_line()
             end
         end
         imgui.new_line()
+        imgui.text_colored("OGRE TEST:", 0xFF00C8FF)   -- (user: easy to find - its own coloured line)
+        for _, d in ipairs(DUMMIES) do
+            if d.tag == "ch251000" or d.tag == "ch251001" or d.tag == "ch251002" then
+                imgui.same_line()
+                if imgui.button("Spawn a NORMAL " .. d.name .. "##ogre") then require("DragonCore.game.actor_fx").defer(function() dummy.real(d) end) end
+            end
+        end
         dbg.vf = dbg.vf or { density = 5, size = 8, height = 5, col = 0, emis = false, kind = 2 }
         local vf = dbg.vf
         if imgui.button(vf.go and "remove the fog box##vf" or "Darkness test: a black FOG BOX 10 m ahead (engine volumetric fog)##vf") then
@@ -13835,20 +15876,26 @@ re.on_draw_ui(function()
         end
         imgui.new_line()
         if imgui.button("Remove all dummies (and the normal ones)") then
+            -- (crash hunt) first nothing of ours points at them any more: the combo / Misty Dive targets, the ground re-check
+            combo.target, dummy.resnap = nil, {}
+            pcall(function() if dbg.misty then dbg.misty.target = nil end end)
+            pcall(function() if combo.ex then combo.ex.hpWatch = nil end end)
             require("DragonCore.game.summons").request_remove_all()
             dummy.set, dummy.hits, dummy.count, dummy.wanted, dummy.status = {}, {}, 0, {}, "removed"
         end
         local okH, hr = pcall(function() return sdk.get_managed_singleton("app.TimeManager"):get_InGameHour() end)
         imgui.text(("Time of day: %s:00"):format(okH and tostring(hr) or "?"))
         if imgui.button("Skip to daytime (10:00)") then
-            local okS, e2 = pcall(dbg.day_skip, 10)
-            if not okS then note("time skip failed: " .. tostring(e2)) end
+            require("DragonCore.game.actor_fx").defer(function()
+                local okS, e2 = pcall(dbg.day_skip, 10)
+                if not okS then note("time skip failed: " .. tostring(e2)) end
+            end)
         end
         imgui.same_line()
         ch, cfg.keepDay = imgui.checkbox("keep it daytime", cfg.keepDay == true)
         if ch then save_cfg() end
         -- the Recorder: my effects / sounds / animations (+ nearby objects' sounds) -> Caustic Brew's sound picks
-        if imgui.tree_node("Recorder (my effects + sounds + animations, works with any weapon)") then
+        if dbg.tree("Recorder (my effects + sounds + animations, works with any weapon)") then
             local chr
             chr, dbg.rec.secs = imgui.slider_float("seconds", dbg.rec.secs, 2, 30, "%.0f")
             if imgui.button(dbg.rec.on and "recording..." or "record now") and not dbg.rec.on then
@@ -13857,7 +15904,7 @@ re.on_draw_ui(function()
             local chn
             chn, dbg.rec.near = imgui.checkbox("also sounds of objects within 10 m (barrels, vases, water ...)", dbg.rec.near)
             imgui.text(dbg.rec.info)
-            imgui.tree_pop()
+            dbg.tree_pop()
         end
         imgui.text("Last hits (before -> after | physical, magick):")
         for i = #dbg.hits, 1, -1 do
@@ -13866,10 +15913,10 @@ re.on_draw_ui(function()
                 h.kind, h.before or 0, h.after or 0, h.phys, h.mag, h.elemental or 0, h.rate or 0))
         end
         for i = #dbg.log, 1, -1 do imgui.text(dbg.log[i]) end
-        imgui.tree_pop()
+        dbg.tree_pop()
     end
     end)
     imgui.pop_style_color(#THEME)
     if not ok then imgui.text_colored("menu error: " .. tostring(err), 0xFF4040FF) end
-    imgui.tree_pop()
+    dbg.tree_pop()
 end)
