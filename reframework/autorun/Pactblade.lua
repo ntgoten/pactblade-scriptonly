@@ -6,7 +6,7 @@
 --   * Blast damage = the hit's magick base x Magick Bolt's attack multiplier x the passive's magick bonus x 5 / 10.
 --   * Passive on all your other hits: magick part x1.5 (physical part unchanged).
 -- Nothing is written into the save; Reset scripts or removing the file undoes everything.
-local NAME, VERSION = "Pactblade", "1.3.1"
+local NAME, VERSION = "Pactblade", "1.3.2"
 local DATA = "Pactblade.json"
 -- (1.0) RELEASE (json.RELEASE): the short menu, and of the data files only the ones Pactblade needs are written.
 -- A test build: RELEASE = false below (the full test menu + the debug dumps). (No extra main-chunk locals: 200 max.)
@@ -4756,7 +4756,7 @@ combo.ex.MSG[6] = { 5272403418500257997, 3880329162121037737,
     "An advanced form of Tasha's Caustic Brew. Moments\nafter the acid lands, the whole stream bursts\ninto flame. Needs Caustic Brew at level 2." }   -- 884358cd-...
 combo.ex.MSG[7] = { 5236488807798082832, -4446148249659274612, "Misty Strike EX" }   -- 9b1d0d10-bed3-48ab-8c8a-5540b91b4cc2
 combo.ex.MSG[8] = { 5491324103060664110, -9222850746851261812,
-    "An advanced form of Misty Strike. When the strike\nhits, press the skill again to vanish from sight\nuntil you attack. Needs Misty Strike at level 2." }   -- 6d78af2e-...
+    "An advanced form of Misty Strike. When the strike\nhits, press the skill again to vanish from sight\nuntil you attack (uses a spell slot). Needs\nMisty Strike at level 2." }   -- 6d78af2e-...
 -- (user 2026-10-30) the weapon special skills shown as our EX skills (name / description by ability id, message id or
 -- the game's own name in a text); each only while its EX isn't switched off
 combo.ex.RN = {
@@ -13580,6 +13580,12 @@ end)()
         end
         if not hit then return false end
         ex.done = true
+        if dbg.slots and not dbg.slots.use() then   -- (user: turning invisible needs and uses a spell slot)
+            dbg.slots.deny()
+            note("Misty Strike EX: no spell slot free - no stealth")
+            return true
+        end
+        note("Misty Strike EX: a spell slot used")
         bs.stealth_on(a)
         return true
     end

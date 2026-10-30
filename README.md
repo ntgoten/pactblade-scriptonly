@@ -4,7 +4,7 @@ A custom vocation for Dragon's Dogma 2: a pact-bound swordsman with a fast, magi
 eldritch magick in the other. No shield. Inspired by the D&D 5e warlock (names only).
 
 Pactblade is built on **Vocation & Skill Builder (VSB)** as a Fighter vocation and runs as a REFramework script.
-Play it as Fighter, or as Warfarer with a sword. Version **1.3.1**.
+Play it as Fighter, or as Warfarer with a sword. Version **1.3.2**.
 
 **This repository is the script-only edition:** only my own files - the Lua script, its Dimension Door module, the
 VSB pack (the vocation and skill definitions), the default settings and the guides. It carries **no game files and
@@ -95,11 +95,13 @@ screens, and the skill's name gets "EX".
 | Archfey Combo EX | Cloudfall Strike | After the opening teleports: a kick and backflip, a sliding cut past the enemy, then the falling strike. |
 | Eldritch Slash EX | Plenilune Slash | A vertical cut with its wave; the swing slows down for a moment - press again for a second, horizontal cut with a flat wave and a sword twirl. No second press: back to idle. Real sword hits. |
 | Tasha's Caustic Brew EX | Tornadic Strike | Moments after the acid lands, the whole stream bursts into flame from end to end and sets foes on fire. Uses a **spell slot** (no slot free: the acid only). |
-| Misty Strike EX | Eviscerating Skewer | When the strike hits, press the skill again to vanish: foes lose track of you and you turn see-through with a faint glowing outline, until your next attack (or 10 s). Drains a little stamina while hidden. |
+| Misty Strike EX | Eviscerating Skewer | When the strike hits, press the skill again to vanish: foes lose track of you and you turn see-through with a faint glowing outline, until your next attack (or 10 s). Uses a **spell slot** (none free: no vanishing); drains a little stamina while hidden. |
 
 ## Spell slots
 
 Like a warlock's pact magic: **Eldritch Smite** and **Tasha's Otherworldly Guise** each use a spell slot.
+Two EX skills use one too: **Tasha's Caustic Brew EX** (the fire - none free: the acid only) and **Misty Strike EX**
+(the vanishing - none free: no vanishing).
 - You have **1 slot at level 1**, one more every 15 levels (15, 30, 45, 60), **at most 5**.
 - A used slot comes back after **20 s**; several come back one after another. Menus don't count.
 - With no slot free, the two skills are greyed out and can't be used. The Guise uses its slot when the spell takes
@@ -137,6 +139,9 @@ Jump
 ```
 
 ## Changelog
+
+**1.3.2**
+- Misty Strike EX: vanishing now needs and uses a **spell slot** (none free: no vanishing).
 
 **1.3.1**
 - New: **Misty Strike EX** (sword special skill Eviscerating Skewer + Misty Strike at level 2): when the strike hits,
@@ -193,7 +198,7 @@ Jump
 
 ## Settings
 
-REFramework menu (Insert) → Script Generated UI → **Pactblade 1.3.1**: Nox sword look on/off, arm effect on/off, the spell slot display (on/off, position, size), and
+REFramework menu (Insert) → Script Generated UI → **Pactblade 1.3.2**: Nox sword look on/off, arm effect on/off, the spell slot display (on/off, position, size), and
 **Dimension Door** (on/off, also for other vocations, the key, range, how long a door stays open, the door's look).
 
 ## Safe for your save and online
