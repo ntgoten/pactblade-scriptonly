@@ -4,7 +4,7 @@ A custom vocation for Dragon's Dogma 2: a pact-bound swordsman with a fast, magi
 eldritch magick in the other. No shield. Inspired by the D&D 5e warlock (names only).
 
 Pactblade is built on **Vocation & Skill Builder (VSB)** as a Fighter vocation and runs as a REFramework script.
-Play it as Fighter, or as Warfarer with a sword. Version **1.3.2**.
+Play it as Fighter, or as Warfarer with a sword. Version **1.3.3**.
 
 **This repository is the script-only edition:** only my own files - the Lua script, its Dimension Door module, the
 VSB pack (the vocation and skill definitions), the default settings and the guides. It carries **no game files and
@@ -140,6 +140,9 @@ Jump
 
 ## Changelog
 
+**1.3.3**
+- Removed: the Archfey Combo "final strike HIT / MISSED" text on the screen (a leftover test display).
+
 **1.3.2**
 - Misty Strike EX: vanishing now needs and uses a **spell slot** (none free: no vanishing).
 
@@ -198,7 +201,7 @@ Jump
 
 ## Settings
 
-REFramework menu (Insert) → Script Generated UI → **Pactblade 1.3.2**: Nox sword look on/off, arm effect on/off, the spell slot display (on/off, position, size), and
+REFramework menu (Insert) → Script Generated UI → **Pactblade 1.3.3**: Nox sword look on/off, arm effect on/off, the spell slot display (on/off, position, size), and
 **Dimension Door** (on/off, also for other vocations, the key, range, how long a door stays open, the door's look).
 
 ## Safe for your save and online

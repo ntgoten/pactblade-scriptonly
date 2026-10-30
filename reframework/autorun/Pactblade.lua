@@ -6,7 +6,7 @@
 --   * Blast damage = the hit's magick base x Magick Bolt's attack multiplier x the passive's magick bonus x 5 / 10.
 --   * Passive on all your other hits: magick part x1.5 (physical part unchanged).
 -- Nothing is written into the save; Reset scripts or removing the file undoes everything.
-local NAME, VERSION = "Pactblade", "1.3.2"
+local NAME, VERSION = "Pactblade", "1.3.3"
 local DATA = "Pactblade.json"
 -- (1.0) RELEASE (json.RELEASE): the short menu, and of the data files only the ones Pactblade needs are written.
 -- A test build: RELEASE = false below (the full test menu + the debug dumps). (No extra main-chunk locals: 200 max.)
@@ -7665,16 +7665,6 @@ pcall(function()
 end)
 
 end)()
-
-re.on_frame(function()
-    local r = combo.result
-    if not r or os.clock() - r.t > 4 then return end
-    pcall(function()
-        local col = r.ok and 0xFF40FF40 or 0xFF4040FF   -- ABGR: green / red
-        draw.text(r.text, 60, 220, 0xFF000000)
-        draw.text(r.text, 59, 219, col)
-    end)
-end)
 
 -- time skip to `hour`:00 where the player stands (app.TimeSkipManager.requestPlayerWarp, as Nick's Devtools do)
 function dbg.day_skip(hour)
