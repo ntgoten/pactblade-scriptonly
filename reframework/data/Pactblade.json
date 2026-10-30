@@ -120,7 +120,7 @@
     "slashR": 239,
     "slashRange": 8.0,
     "slashTurn": true,
-    "slashTurnCone": 70.0,
+    "slashTurnCone": 80.0,
     "slashTurnRange": 10.0,
     "slashTurnSpeed": 360.0,
     "slashWave": "magike",

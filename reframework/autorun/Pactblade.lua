@@ -6,7 +6,7 @@
 --   * Blast damage = the hit's magick base x Magick Bolt's attack multiplier x the passive's magick bonus x 5 / 10.
 --   * Passive on all your other hits: magick part x1.5 (physical part unchanged).
 -- Nothing is written into the save; Reset scripts or removing the file undoes everything.
-local NAME, VERSION = "Pactblade", "1.3"
+local NAME, VERSION = "Pactblade", "1.3.1"
 local DATA = "Pactblade.json"
 -- (1.0) RELEASE (json.RELEASE): the short menu, and of the data files only the ones Pactblade needs are written.
 -- A test build: RELEASE = false below (the full test menu + the debug dumps). (No extra main-chunk locals: 200 max.)
@@ -3150,6 +3150,10 @@ pcall(function()
             if not owner or owner:get_address() ~= live.go then return end
             s.pbInfo = info
             if dbg.misty and dbg.misty.stage == "dive" then dbg.misty.hitLanded = true end   -- (3.50)
+            if dbg.blink and dbg.blink.stage == "strike" and dbg.blink.ex and not dbg.blink.ex.done then   -- (Misty Strike EX) the window
+                if not dbg.blink.ex.hitAt then note("Misty Strike EX: the strike hit - press again within " .. tostring(combo.ex.msWindow or 1.5) .. " s") end
+                dbg.blink.ex.hitAt = os.clock()
+            end
             if dbg.smite and dbg.smite.stage == 2 and dbg.smite_hit then
                 pcall(function()
                     local hc = info:get_AttackHitController()
@@ -4235,6 +4239,10 @@ combo.ex = { mode = "auto", info = "-", hits = 0, lastHitInfo = "-",
     slxActFrom = 27, slxFree2 = 92,
     -- (user 2026-10-30) Caustic Brew EX: the acid's strip ignites bwDelay s after its last splash (normal fire, burn meter)
     bwSndIgnite = 61797333, bwSndBurn = 3520342338, bwSndStop = 4169246058,   -- (the fire's sounds, picked by ear)
+    -- (user 2026-10-30) Misty Strike EX: the strike hits -> press again within msWindow s -> the Thief's stealth
+    msMode = "on", msWindow = 1.5, msKeep = true, msGlowOn = true, msHue = 285, msSat = 0.2, msSteady = true, msGlowMul = 1.0,
+    msSee = true, msShadow = true, msDither = 0.45, msDissolve = 0.0,
+    msIll = false, msIllFront = 0.25, msIllRim = 0.80, msIllFade = 0.30, msIllGrad = 1.0, msIllNoise = 0.0, msLevel = 2, msMax = 10, msEndDelay = 0.35,
     bwOutStep = 0.1,   -- (user: the fire goes out patch by patch, start to end)
     bwMode = "on", bwDelay = 1.5,   -- (user: 0.5 -> 1 s after the last splash)
     bwSecs = 3.7, bwTick = 0.3, bwDmg = 120, bwBurnPts = 50, bwFx = 0, bwFxSize = 1.0,   -- (user: the fire 0.7 s longer)
@@ -4571,7 +4579,8 @@ combo.ex.SAVE = { "mode", "zoomEarly", "finStrong", "finType", "finReact", "finB
     "zoomOut", "slideBack", "reactSlide", "t2Weaken", "t2Type", "t2React", "dmg", "react", "legR", "bladeR", "bladeLen", "rehit",
     "slideRight", "slideLeft", "slideFromStart", "stamina", "needLv2", "slideGuard", "slideFx", "slideYaw", "t2Right", "slideEfx", "slideEfxPick", "slideEfxSize", "slideEfxSkip", "slideEfxSecs", "slideEfxUp",
     "slxMode", "slxWave1", "slxWave2", "slxSlowFrom", "slxSlowTo", "slxSlow", "slxEnd", "slxRoll1", "slxRoll2", "slxBlend", "slxStamina2", "slxRec", "slxRecFrom", "slxRecBlend", "slxFree", "slxWindow", "slxBackBlend", "slxActFrom", "slxFree2",
-    "bwMode", "bwDelay", "bwSecs", "bwTick", "bwDmg", "bwBurnPts", "bwFx", "bwFxSize", "bwSndIgnite", "bwSndBurn", "bwSndStop", "bwOutStep", "bwInStep", "bwSndEarly" }
+    "bwMode", "bwDelay", "bwSecs", "bwTick", "bwDmg", "bwBurnPts", "bwFx", "bwFxSize", "bwSndIgnite", "bwSndBurn", "bwSndStop", "bwOutStep", "bwInStep", "bwSndEarly", "msMode", "msWindow", "msKeep", "msGlowOn", "msHue", "msSat", "msSteady", "msGlowMul", "msSee", "msShadow", "msDither", "msDissolve",
+    "msIll", "msIllFront", "msIllRim", "msIllFade", "msIllGrad", "msIllNoise", "msLevel", "msMax", "msEndDelay" }
 pcall(function()
     local saved = json.load_file("Pactblade_ex.json")
     if type(saved) ~= "table" then return end
@@ -4671,6 +4680,11 @@ function combo.ex.mode_of(k)
     if v == nil then return (k == "mode") and "auto" or "on" end
     return v
 end
+function combo.ex.ms_active()   -- Misty Strike EX: Eviscerating Skewer (EX ability 3) + Misty Strike level 2
+    local m = combo.ex.mode_of("msMode")
+    if m == "on" then return true elseif m ~= "auto" then return false end
+    return combo.ex.has_ability(3) and (not combo.ex.needLv2 or combo.ex.level_of("strike") >= 2)
+end
 function combo.ex.bw_active()   -- Caustic Brew EX: Tornadic Strike (EX ability 5) + Caustic Brew level 2
     local m = combo.ex.mode_of("bwMode")
     if m == "on" then return true elseif m ~= "auto" then return false end
@@ -4686,6 +4700,7 @@ re.on_pre_application_entry("UpdateBehavior", function()
     pcall(function() st.cloud, st.lv, st.on = combo.ex.weapon_has(), combo.ex.level(), combo.ex.active() end)
     pcall(function() st.plen, st.lvSlash, st.slxOn = combo.ex.has_ability(2), combo.ex.level_of("slash"), combo.slx and combo.slx.active() end)
     pcall(function() st.torn, st.lvBrew, st.bwOn = combo.ex.has_ability(5), combo.ex.level_of("brew"), combo.ex.bw_active() end)
+    pcall(function() st.skew, st.lvStrike, st.msOn = combo.ex.has_ability(3), combo.ex.level_of("strike"), combo.ex.ms_active() end)
 end)
 function combo.ex.active()
     local m = combo.ex.mode_of("mode")   -- (1.3: the EX in the release too - always auto there)
@@ -4705,7 +4720,7 @@ function combo.ex.name_update()
     if not reg or not reg.text then return end
     local changed = false
     for _, k in ipairs({ { "combo", combo.ex.active }, { "slash", function() return combo.slx and combo.slx.active() end },
-                         { "brew", function() return combo.ex.bw_active() end } }) do
+                         { "brew", function() return combo.ex.bw_active() end }, { "strike", function() return combo.ex.ms_active() end } }) do
         pcall(function()
             local id
             for vid, e in pairs((dbg.adapter and dbg.adapter.map) or {}) do if e.kind == k[1] then id = vid end end
@@ -4739,6 +4754,9 @@ combo.ex.MSG[4] = { 4630196714323512994, -6921765411289744733,
 combo.ex.MSG[5] = { 5339528177135007678, -5847658842150820701, "Caustic Brew EX" }   -- 4a5237be-d096-4a19-a3a4-ede943f1d8ae
 combo.ex.MSG[6] = { 5272403418500257997, 3880329162121037737,
     "An advanced form of Tasha's Caustic Brew. Moments\nafter the acid lands, the whole stream bursts\ninto flame. Needs Caustic Brew at level 2." }   -- 884358cd-...
+combo.ex.MSG[7] = { 5236488807798082832, -4446148249659274612, "Misty Strike EX" }   -- 9b1d0d10-bed3-48ab-8c8a-5540b91b4cc2
+combo.ex.MSG[8] = { 5491324103060664110, -9222850746851261812,
+    "An advanced form of Misty Strike. When the strike\nhits, press the skill again to vanish from sight\nuntil you attack. Needs Misty Strike at level 2." }   -- 6d78af2e-...
 -- (user 2026-10-30) the weapon special skills shown as our EX skills (name / description by ability id, message id or
 -- the game's own name in a text); each only while its EX isn't switched off
 combo.ex.RN = {
@@ -4746,6 +4764,8 @@ combo.ex.RN = {
       name = combo.ex.MSG[1][3], desc = combo.ex.MSG[2][3], on = function() return combo.ex.mode_of("mode") ~= "off" end },
     { ab = 2, nameId = "ce599592-463a-441a-b61d-f1fffdd64d23", descId = "3d6f0ea2-c361-4041-a33a-7d1108f3f09f", fallback = "Plenilune Slash",
       name = combo.ex.MSG[3][3], desc = combo.ex.MSG[4][3], on = function() return combo.ex.mode_of("slxMode") ~= "off" end },
+    { ab = 3, nameId = "9b1d0d10-bed3-48ab-8c8a-5540b91b4cc2", descId = "6d78af2e-1a2d-4c35-8c02-7c491cda0180", fallback = "Eviscerating Skewer",
+      name = combo.ex.MSG[7][3], desc = combo.ex.MSG[8][3], on = function() return combo.ex.mode_of("msMode") ~= "off" end },
     { ab = 5, nameId = "4a5237be-d096-4a19-a3a4-ede943f1d8ae", descId = "884358cd-56f9-492b-a947-d067d0b2d935", fallback = "Tornadic Strike",
       name = combo.ex.MSG[5][3], desc = combo.ex.MSG[6][3], on = function() return combo.ex.mode_of("bwMode") ~= "off" end },
 }
@@ -10858,6 +10878,10 @@ function dbg.rim_glow(a, on, secs)
     local go = a.character:get_GameObject()
     local mgr = go:call("getComponent(System.Type)", sdk.typeof("app.MaterialInterpolationRequestManager"))
     if not mgr then return end
+    if on and sm.rimOn then   -- (already on: never asked twice - one finish must end it; just longer)
+        sm.rimOffAt = math.max(sm.rimOffAt or 0, os.clock() + (secs or sm.RIM.secs))
+        return
+    end
     if on then
         mgr:call(RIM_REQ, sm.RIM.mode, sm.RIM.cat, -1, -1)
         sm.rimOn, sm.rimOffAt = true, os.clock() + (secs or sm.RIM.secs)   -- (a pulse: off again by itself)
@@ -10921,15 +10945,24 @@ re.on_pre_application_entry("BeginRendering", function()
         if a then pcall(dbg.rim_glow, a, false) end
     end
     if not sm.rimOn or not sm.rimEntries then return end
-    local hue = pick_hue()
+    local hue = sm.rimHue or pick_hue()   -- (Misty Strike EX: its own hue / saturation while its look is held)
     for i = #sm.rimEntries, 1, -1 do   -- the game's teal, turned to our hue (its own strength kept)
         local e = sm.rimEntries[i]
         local ok = pcall(function()
             local f = e.mesh:call("getMaterialFloat4(System.UInt32, System.UInt32)", e.m, e.v)
             local h, s0, v = dbg.ai.hsv(f.x, f.y, f.z)
+            if sm.rimSteady then   -- (Misty Strike EX: no pulse - the highest strength the game gave, never our own value)
+                local mine = e.w and math.abs(f.x - e.w.x) < 1e-4 and math.abs(f.y - e.w.y) < 1e-4 and math.abs(f.z - e.w.z) < 1e-4
+                if not mine and v > (e.vmax or 0) then e.vmax = v end
+                if not e.vmax then return end
+                v = e.vmax * (sm.rimMul or 1)
+            end
             if v <= 0.001 then return end
+            if sm.rimSat and sm.rimSat >= 0 then s0 = sm.rimSat end
             local r, g, b = dbg.ai.rgb(hue, s0, v)
-            e.mesh:call("setMaterialFloat4(System.UInt32, System.UInt32, via.Float4)", e.m, e.v, Vector4f.new(r, g, b, f.w))
+            local w = Vector4f.new(r, g, b, f.w)
+            e.mesh:call("setMaterialFloat4(System.UInt32, System.UInt32, via.Float4)", e.m, e.v, w)
+            e.w = w
         end)
         if not ok then table.remove(sm.rimEntries, i) end
     end
@@ -12232,6 +12265,7 @@ end)
 re.on_pre_application_entry("BeginRendering", function()   -- my body glow (SkyDive's rim light) in our colour
     if md.tealAt and os.clock() >= md.tealAt then md.tealAt = nil; pcall(md.teal_dump) end
     if not md.fxOn or not md.busy() or not dbg.rim_paint then md.rim = nil; return end
+    if dbg.blink and dbg.blink.look and not dbg.blink.look.backAt then md.rim = nil; return end   -- (Misty Strike EX's look has the glow)
     local hue = md.hue()
     if not hue then return end
     if not md.rim then
@@ -13468,6 +13502,8 @@ end)()
         local fr = L:call("get_Frame")
         bs.frame = fr
         pcall(function() bs.motion = ("%d/%d"):format(L:call("get_MotionBankID"), L:call("get_MotionID")) end)
+        local exNow = bs.ex_check(a)   -- (EX) the 2nd press after the hit
+        if exNow then note(("Misty Strike EX: pressed again at frame %.0f"):format(fr)) end
         if not bs.endF then pcall(function() bs.endF = L:call("get_EndFrame"); note(("Misty Strike: Riotous Fury's animation %s, %.0f frames"):format(bs.motion, bs.endF)) end) end
         if not bs.framed then
             bs.framed = true
@@ -13488,7 +13524,7 @@ end)()
             local ok = pcall(L.call, L, CHANGE, L:call("get_MotionBankID"), L:call("get_MotionID"), last, (bs.endBlend or 8) + 0.0, 1, 1)
             if not ok then pcall(function() L:call("set_Frame", last) end) end
         end
-        if fr >= bs.cancelFrom then   -- (i-0.4) after the hit: the next input ends it at once
+        if fr >= bs.cancelFrom and not exNow then   -- (i-0.4) after the hit: the next input ends it at once
             local pressed
             for _, b in ipairs({ "AttackL", "AttackS", "Jump", "JobSpecialAction", "Skill1", "Skill2", "Skill3", "Skill4", "Skill5", "Skill6", "Dash", "SkillAdditional" }) do
                 local ok, v = pcall(a.button_pressed, a, b)
@@ -13524,6 +13560,210 @@ end)()
     re.on_pre_application_entry("LateUpdateBehavior", lock_ground)
     re.on_application_entry("LateUpdateBehavior", lock_ground)
     re.on_pre_application_entry("BeginRendering", lock_ground)
+    -- (EX) the Thief's stealth on me, and its end (my next attack / skill, the game's timer, msMax)
+    local stealthStart
+    local function sbm(a) return a.human:get_field("SpecialBuffManager") end
+    function bs.ex_check(a, byPress)   -- the window after the strike's hit: the skill's button again -> stealth
+        local ex = bs.ex
+        if not ex or ex.done or not ex.hitAt or not a then return false end
+        if os.clock() - ex.hitAt > (combo.ex.msWindow or 1.5) then
+            ex.done = true
+            note(("Misty Strike EX: no second press within %.1f s - no stealth"):format(combo.ex.msWindow or 1.5))
+            return false
+        end
+        local hit = byPress
+        if not hit then
+            for _, f in ipairs(ex.flags) do
+                local ok, v = pcall(a.button_pressed, a, f)
+                if ok and v then hit = true; break end
+            end
+        end
+        if not hit then return false end
+        ex.done = true
+        bs.stealth_on(a)
+        return true
+    end
+    local function buff_of(a) return sbm(a):get_field("Job04Stealth") end
+    pcall(function()   -- (EX) keep the buff alive while our stealth is on (msKeep), every refusal logged once
+        local T = sdk.find_type_definition("app.HumanSpecialBuffManager.Job04StealthBuff")
+        local function ours(ptr)
+            local st, a = bs.stealth, runtime.player()
+            if not st or not a or not combo.ex.msKeep then return false end
+            local yes = false
+            pcall(function() yes = buff_of(a):get_address() == sdk.to_int64(ptr) end)
+            return yes
+        end
+        sdk.hook(T:get_method("isTimerOver"), function(args) thread.get_hook_storage().pbThis = args[2] end, function(r)
+            local this = thread.get_hook_storage().pbThis
+            if this and (sdk.to_int64(r) & 1) == 1 and ours(this) then
+                if not bs.stealth.saidTimer then bs.stealth.saidTimer = true; note("Misty Strike EX: the game said the stealth's time is over - kept") end
+                return sdk.to_ptr(0)
+            end
+            return r
+        end)
+        sdk.hook(T:get_method("clear"), function(args)
+            if bs.clearing or not ours(args[2]) then return end
+            if not bs.stealth.saidClear then bs.stealth.saidClear = true; note("Misty Strike EX: the game tried to clear the stealth - refused") end
+            return sdk.PreHookResult.SKIP_ORIGINAL
+        end, function(r) return r end)
+    end)
+    function bs.stealth_on(a)
+        local ok, err = pcall(function()
+            if not stealthStart then
+                for _, mm in ipairs(sdk.find_type_definition("app.HumanSpecialBuffManager"):get_methods()) do
+                    if mm:get_name() == "startBuff_Job04Stealth" then stealthStart = mm end
+                end
+            end
+            stealthStart:call(sbm(a), math.floor(combo.ex.msLevel or 2), nil)
+        end)
+        local on = false
+        pcall(function() on = sbm(a):call("get_IsActiveJob04Stealth") == true end)
+        bs.stealth = on and { t0 = os.clock(), act0 = tostring(a:current_action(0) or ""), stam0 = a:stamina() } or nil
+        if on then pcall(bs.look_on, a) end
+        note(("Misty Strike EX: stealth %s%s (stamina %.0f)"):format(on and "ON" or "did NOT start",
+            ok and "" or (" - " .. tostring(err)), a:stamina() or -1))
+    end
+    -- (EX) the look = the Eldritch Bolt charge's body glow, held for the stealth: the Bolt's own request, painter and end
+    local sm = dbg.smite   -- (the Bolt's glow state lives in Eldritch Smite's block)
+    -- (EX) + see-through: alpha test forced through my MaterialParamMediator (the game's own fade path, Work_03), and the
+    -- material floats below each frame; every one saved first and put back at the end
+    local X = function() return combo.ex end
+    local function sat() local v = X().msSat; return (v == nil or v < 0) and 0.2 or v end   -- (a saved "game's own" -> whitish)
+    local FL = {   -- name, value (nil = not written now)
+        { "RimLight_AnimRate_A", function() return X().msSteady ~= false and X().msGlowOn ~= false and 0.0 or nil end },
+        { "RimLight_AnimRate_B", function() return X().msSteady ~= false and X().msGlowOn ~= false and 0.0 or nil end },
+        { "RimLight_AnimSpeed_A", function() return X().msSteady ~= false and X().msGlowOn ~= false and 0.0 or nil end },
+        { "RimLight_AnimSpeed_B", function() return X().msSteady ~= false and X().msGlowOn ~= false and 0.0 or nil end },
+        { "DitherFadeRate", function() return X().msSee ~= false and (X().msDither or 0.45) or nil end },
+        { "DissolveRate", function() return X().msSee ~= false and (X().msDissolve or 0.0) or nil end },
+        { "Illusion_Enable", function() return X().msIll and 1.0 or nil end },
+        { "Illusion_AlphaRate_Front", function() return X().msIll and (X().msIllFront or 0.25) or nil end },
+        { "Illusion_AlphaRate_Rim", function() return X().msIll and (X().msIllRim or 0.80) or nil end },
+        { "Illusion_FadeRate", function() return X().msIll and (X().msIllFade or 0.30) or nil end },
+        { "Illusion_RimAlphaGrad", function() return X().msIll and (X().msIllGrad or 1.0) or nil end },
+        { "Illusion_NoiseBlend", function() return X().msIll and (X().msIllNoise or 0.0) or nil end } }
+    local function my_meshes(go, out, depth, seen)
+        pcall(function()
+            local m = go:call("getComponent(System.Type)", sdk.typeof("via.render.Mesh"))
+            if m and not seen[m:get_address()] then seen[m:get_address()] = true; out[#out + 1] = m:add_ref() end
+        end)
+        if depth < 6 then
+            pcall(function()
+                local ch = go:get_Transform():call("get_Child")
+                while ch do my_meshes(ch:get_GameObject(), out, depth + 1, seen); ch = ch:call("get_Next") end
+            end)
+        end
+        return out
+    end
+    local function float_slots(a)   -- only float variables that read a sane value
+        local hash = dbg.nameHash or sdk.find_type_definition("app.StringExtension"):get_method("hash(System.String)")
+        for _, g in ipairs(FL) do g.hash = g.hash or hash:call(nil, g[1]) end
+        local out = {}
+        for _, m in ipairs(my_meshes(a.character:get_GameObject(), {}, 0, {})) do
+            pcall(function()
+                for mi = 0, m:call("get_MaterialNum") - 1 do
+                    for gi, g in ipairs(FL) do
+                        pcall(function()
+                            local v = m:call("getMaterialVariableIndex", mi, g.hash)
+                            if v == nil or v >= 65535 then return end
+                            if m:call("getMaterialVariableType", mi, v) ~= 1 then return end
+                            local o = m:call("getMaterialFloat", mi, v)
+                            if type(o) ~= "number" or o ~= o or math.abs(o) > 1000 then return end
+                            out[#out + 1] = { mesh = m, m = mi, v = v, g = gi, orig = o }
+                        end)
+                    end
+                end
+            end)
+        end
+        return out
+    end
+    local WORK
+    local function alpha_test(a, on)
+        pcall(function()
+            WORK = WORK or sdk.find_type_definition("app.MaterialParamMediator.WorkIndex"):get_field("Work_03"):get_data(nil)
+            local med = a.character:get_GameObject():call("getComponent(System.Type)", sdk.typeof("app.MaterialParamMediator"))
+            med:call("requestForceAlphaTest", WORK, on, on and X().msShadow ~= false or false)
+        end)
+    end
+    local function put_back(slots)
+        for _, e in ipairs(slots or {}) do pcall(e.mesh.call, e.mesh, "setMaterialFloat", e.m, e.v, e.orig) end
+    end
+    function bs.look_on(a)
+        if bs.look and not bs.look.backAt then return end
+        if bs.look then put_back(bs.look.slots); bs.look = nil end   -- (the last one still ending: done now)
+        local ok, slots = pcall(float_slots, a)   -- (saved BEFORE the glow is asked for)
+        bs.look = { slots = ok and slots or {}, alpha = false }
+        if X().msGlowOn ~= false then
+            sm.rimHue, sm.rimSat, sm.rimSteady, sm.rimMul = X().msHue or 285, sat(), X().msSteady ~= false, X().msGlowMul or 1
+            pcall(dbg.rim_glow, a, true, 100000)
+            bs.look.glow = true
+        end
+        note(("Misty Strike EX look: on (%d material value(s) saved%s)"):format(#bs.look.slots, ok and "" or (" - " .. tostring(slots))))
+    end
+    re.on_pre_application_entry("UpdateBehavior", function()
+        local L = bs.look
+        if L and L.backAt and os.clock() >= L.backAt then put_back(L.slots); bs.look = nil; return end   -- (put back once more)
+        if not L or L.backAt then return end
+        local a = runtime.player()
+        if not a then return end
+        if bs.stealth or bs.lookTest then
+            if L.glow then sm.rimHue, sm.rimSat, sm.rimSteady, sm.rimMul = X().msHue or 285, sat(), X().msSteady ~= false, X().msGlowMul or 1 end
+            local want = X().msSee ~= false
+            if want ~= L.alpha then L.alpha = want; alpha_test(a, want) end
+            return
+        end
+        if L.glow then
+            sm.rimHue, sm.rimSat, sm.rimSteady, sm.rimMul = nil, nil, nil, nil
+            if sm.rimOn then sm.rimOffAt = os.clock() end   -- (the Bolt's own end: its BeginRendering handler finishes it)
+        end
+        if L.alpha then alpha_test(a, false) end
+        put_back(L.slots)
+        L.backAt = os.clock() + 0.3
+        note(("Misty Strike EX look: off (%d value(s) put back)"):format(#L.slots))
+    end)
+    re.on_application_entry("BeginRendering", function()   -- the values (after the game's own writes of the frame)
+        local L = bs.look
+        if not L or L.backAt then return end
+        for _, e in ipairs(L.slots) do
+            local v = FL[e.g][2]()
+            if v then pcall(e.mesh.call, e.mesh, "setMaterialFloat", e.m, e.v, v + 0.0) end
+        end
+    end)
+    local function stealth_off(a, why)
+        bs.clearing = true
+        pcall(function() sbm(a):call("clearBuff_Job04Stealth") end)
+        bs.clearing = false
+        local st = bs.stealth
+        bs.stealth = nil
+        note(("Misty Strike EX: stealth off - %s (%.1f s, stamina %.0f -> %.0f)"):format(why, os.clock() - (st and st.t0 or os.clock()),
+            st and st.stam0 or -1, a:stamina() or -1))
+    end
+    local ATTACKY = { "Attack", "^Job", "Skill", "Smite", "Slash", "Blast", "Combo", "Arrow", "Lunge", "Stab", "Raid" }
+    re.on_pre_application_entry("UpdateBehavior", function()
+        local st = bs.stealth
+        if not st then return end
+        local a = runtime.player()
+        if not a or not a:valid() then bs.stealth = nil; return end
+        local now = os.clock()
+        local active = false
+        pcall(function() active = sbm(a):call("get_IsActiveJob04Stealth") == true end)
+        if not active then bs.stealth = nil; note(("Misty Strike EX: stealth over (the game's own end, %.1f s)"):format(now - st.t0)); return end
+        if now - st.t0 > (combo.ex.msMax or 10) then return stealth_off(a, "time") end
+        if st.endAt then
+            if now >= st.endAt then return stealth_off(a, "after my attack: " .. tostring(st.endWhy)) end
+            return
+        end
+        if bs.stage or now - st.t0 < 0.3 then return end   -- (the strike itself doesn't count)
+        local cur = tostring(a:current_action(0) or "")
+        local attack = false
+        for _, pat in ipairs(ATTACKY) do if cur:find(pat) then attack = true; break end end
+        if attack and cur ~= st.act0 then st.endAt, st.endWhy = now + (combo.ex.msEndDelay or 0.35), cur end
+    end)
+    re.on_pre_application_entry("UpdateBehavior", function()
+        if bs.ex and not bs.ex.done and bs.ex.hitAt and not bs.stage then   -- (EX) the window after the strike ended
+            pcall(bs.ex_check, runtime.player())
+        end
+    end)
     re.on_pre_application_entry("UpdateBehavior", function()
         if not bs.stage and not bs.want then return end
         local a = runtime.player()
@@ -13533,6 +13773,7 @@ end)()
     end)
     function bs.press()
         local now = os.clock()
+        if bs.ex_check(runtime.player(), true) then note("Misty Strike EX: pressed again (the skill)"); return end
         if bs.stage or bs.want or now - bs.lastPress < 0.6 or combo.stage ~= 0 then return end
         local a = runtime.player()
         local busy, cur = dbg.busy_action(a)
@@ -13547,6 +13788,17 @@ end)()
         if air and bs.air then can = dbg.air_ok(a) end   -- (3.94 user: from a jump too)
         note("Misty Strike press" .. (air and " (in the air)" or "") .. (can and "" or " - refused"))
         if can then bs.lastPress, bs.want = now, true; dbg.stam_cost(a, "Misty Strike", bs.stamina or 110) end
+        bs.ex = nil
+        if can and combo.ex.ms_active() then   -- (EX) the skill buttons held right now = the ones a 2nd press uses
+            local flags = {}
+            for _, b in ipairs({ "Skill1", "Skill2", "Skill3", "Skill4", "Skill5", "Skill6", "SkillAdditional" }) do
+                local ok, v = pcall(a.button_down, a, b)
+                if ok and v then flags[#flags + 1] = b end
+            end
+            if #flags == 0 then flags = { "Skill1", "Skill2", "Skill3", "Skill4", "Skill5", "Skill6", "SkillAdditional" } end
+            bs.ex = { flags = flags, done = false }
+            note("Misty Strike EX: the skill's button(s): " .. table.concat(flags, " + "))
+        end
     end
     pcall(function()
         local SIG = "processCustomSkill(app.HumanCustomSkillID, System.UInt64, app.LockOnController.Option, System.Boolean, System.Boolean, System.Boolean, app.LocomotionSpeedTypeEnum, System.Boolean)"
@@ -15596,6 +15848,46 @@ re.on_draw_ui(function()
             chk, bs.prepWarp = imgui.slider_float("teleport after getting ready for (s)##bs", bs.prepWarp, 0.05, 0.8, "%.2f")
             chk, bs.groundLock = imgui.checkbox("stay on the ground while getting ready##bs", bs.groundLock)
             chk, bs.behind = imgui.slider_float("lands this far behind it (m, + its size)##bs", bs.behind, 0, 4, "%.1f")
+            dbg.tree_pop()
+        end
+        if not json.RELEASE and dbg.tree("Misty Strike EX (the strike hits -> press again -> stealth)##msx") then
+            local ex = combo.ex
+            local function bs_ms() return dbg.blink end
+            local MODES = { "auto", "on", "off" }
+            local chm, nv = imgui.combo("Misty Strike EX##msx", ({ auto = 1, on = 2, off = 3 })[ex.msMode or "on"] or 2,
+                { "auto (the sword has Eviscerating Skewer + Misty Strike level 2)", "always on (test)", "off" })
+            if chm then ex.msMode = MODES[nv]; ex.saveAt = os.clock() + 0.5 end
+            imgui.text(("sword has Eviscerating Skewer: %s  -  Misty Strike level %d  -  Misty Strike EX is %s"):format(
+                ex.status.skew and "YES" or "no", ex.status.lvStrike or 0, ex.status.msOn and "ON" or "off"))
+            local ch = {}
+            ch[1], ex.msWindow = imgui.slider_float("press again within (s) after the hit##msx", ex.msWindow, 0.3, 3, "%.1f")
+            ch[5], ex.msKeep = imgui.checkbox("keep the Thief's stealth alive (it ends at once on a Fighter)##msx", ex.msKeep ~= false)
+            ch[6], ex.msGlowOn = imgui.checkbox("body glow while invisible (the Eldritch Bolt charge's)##msx", ex.msGlowOn ~= false)
+            ch[7], ex.msHue = imgui.slider_float("body glow hue (285 = Pactblade purple)##msx", ex.msHue or 285, 0, 360, "%.0f")
+            if (ex.msSat or 0) < 0 then ex.msSat = 0.2 end
+            ch[8], ex.msSat = imgui.slider_float("body glow saturation (0 = white)##msx", ex.msSat or 0.2, 0, 1, "%.2f")
+            local c = {}
+            c[1], ex.msSteady = imgui.checkbox("steady glow (no pulsing)##msx", ex.msSteady ~= false)
+            c[2], ex.msGlowMul = imgui.slider_float("glow strength x (steady glow)##msx", ex.msGlowMul or 1, 0, 4, "%.2f")
+            c[3], ex.msSee = imgui.checkbox("see-through (the game's own fade: alpha test)##msx", ex.msSee ~= false)
+            c[4], ex.msShadow = imgui.checkbox("the shadow fades too##msx", ex.msShadow ~= false)
+            c[5], ex.msDither = imgui.slider_float("DitherFadeRate (the transparency: 1 = solid, 0 = gone)##msx", ex.msDither or 0.45, 0, 1, "%.2f")
+            c[6], ex.msDissolve = imgui.slider_float("DissolveRate##msx", ex.msDissolve or 0, 0, 1, "%.2f")
+            c[7], ex.msIll = imgui.checkbox("ghost material (the Guise's Illusion values)##msx", ex.msIll == true)
+            c[8], ex.msIllFade = imgui.slider_float("Illusion_FadeRate (the see-through control, 0 = gone)##msx", ex.msIllFade or 0.3, 0, 1, "%.2f")
+            c[9], ex.msIllFront = imgui.slider_float("Illusion_AlphaRate_Front (see-through front)##msx", ex.msIllFront or 0.25, 0, 1, "%.2f")
+            c[10], ex.msIllRim = imgui.slider_float("Illusion_AlphaRate_Rim (edges)##msx", ex.msIllRim or 0.8, 0, 1, "%.2f")
+            c[11], ex.msIllGrad = imgui.slider_float("Illusion_RimAlphaGrad##msx", ex.msIllGrad or 1, 0, 4, "%.2f")
+            c[12], ex.msIllNoise = imgui.slider_float("Illusion_NoiseBlend##msx", ex.msIllNoise or 0, 0, 1, "%.2f")
+            for i = 1, 12 do if c[i] then ex.saveAt = os.clock() + 0.5 end end
+            if imgui.button("look ON (test, no strike)##msx") then pcall(function() local b = bs_ms(); b.lookTest = true; b.look_on(runtime.player()) end) end
+            imgui.same_line()
+            if imgui.button("look OFF##msx") then pcall(function() bs_ms().lookTest = false end) end
+            ch[2], ex.msLevel = imgui.slider_int("the Thief's stealth level (0-2)##msx", math.floor(ex.msLevel or 2), 0, 2)
+            ch[3], ex.msMax = imgui.slider_float("stealth lasts at most (s)##msx", ex.msMax, 1, 30, "%.0f")
+            ch[4], ex.msEndDelay = imgui.slider_float("my next attack ends it after (s)##msx", ex.msEndDelay, 0, 1.5, "%.2f")
+            for i = 1, 8 do if ch[i] then ex.saveAt = os.clock() + 0.5 end end
+            if ex.saveAt and os.clock() >= ex.saveAt then ex.saveAt = nil; pcall(ex.save) end
             dbg.tree_pop()
         end
         if not json.RELEASE and combo.slx and dbg.tree("Eldritch Slash EX (Onimusha Skill_121, real sword hits)##slx") then
